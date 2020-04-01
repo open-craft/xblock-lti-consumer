@@ -51,46 +51,6 @@ LTI_BASE_MESSAGE = {
     }
 }
 
-
-def generate_oidc_preflight_request(lti_block):
-    """
-    Generates OIDC url with parameters
-    """
-    oidc_url = lti_block.lti_1p3_oidc_url + "?"
-    parameters = {
-        "iss": PLATFORM_ISS,
-        "target_link_uri": lti_block.consumer_launch_url,
-        "login_hint": "9",
-        "lti_message_hint": "123"
-    }
-
-    return {
-        "oidc_url": oidc_url + urlencode(parameters),
-    }
-
-def construct_launch_request(lti_block, preflight_response):
-    """
-    Construct LTI message
-    """
-    data = {
-        **lti_message,
-        "nonce": preflight_response.get("nonce"),
-        "aud": ["1"],
-    }
-
-    # Wrap it in a JWK class
-    _rsajwk = RSAKey(kid="lti_key", key=_rsakey)
-
-    # create the message
-    msg = json.dumps(data)
-
-    # The class instance that sets up the signing operation
-    _jws = JWS(msg, alg="RS256")
-
-    # Encode and sign LTI message
-    return _jws.sign_compact([_rsajwk])
-
-
 class LtiConsumer1p3:
     def __init__(
             self,
