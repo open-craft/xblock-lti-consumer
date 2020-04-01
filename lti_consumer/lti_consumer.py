@@ -62,6 +62,7 @@ import six.moves.urllib.error
 import six.moves.urllib.parse
 import six
 import bleach
+from Crypto.PublicKey import RSA
 from django.utils import timezone
 from webob import Response
 from xblock.core import List, Scope, String, XBlock
@@ -77,6 +78,7 @@ from .lti13 import LtiConsumer1p3
 from .oauth import log_authorization_header
 from .outcomes import OutcomeService
 from .utils import _
+
 
 log = logging.getLogger(__name__)
 
@@ -127,7 +129,6 @@ LTI_PARAMETERS = [
     'custom_component_display_name'
 ]
 
-from Crypto.PublicKey import RSA
 
 def parse_handler_suffix(suffix):
     """
@@ -692,6 +693,7 @@ class LtiConsumerXBlock(StudioEditableXBlockMixin, XBlock):
     @property
     def consumer_launch_url(self):
         """
+        XBlock Consumer launch handler url
         """
         return self.runtime.handler_url(
             self,
@@ -701,6 +703,7 @@ class LtiConsumerXBlock(StudioEditableXBlockMixin, XBlock):
     @property
     def keyset_url(self):
         """
+        LTI 1.3 Public Keyset URL
         """
         return self.runtime.handler_url(
             self,
@@ -838,6 +841,11 @@ class LtiConsumerXBlock(StudioEditableXBlockMixin, XBlock):
         return fragment
 
     def _get_lti1p3_consumer(self):
+        """
+        Returns LTI 1.3 Consumer class
+
+        Instanced from parameters from XBlock
+        """
         return LtiConsumer1p3(
             'http://localhost:18000',
             self.lti_1p3_oidc_url,
@@ -895,8 +903,8 @@ class LtiConsumerXBlock(StudioEditableXBlockMixin, XBlock):
         """
         if self.lti_version == "lti_1p3":
             return self._launch_lti_1p3(request)
-        else:
-            return self._launch_lti_1p1()
+
+        return self._launch_lti_1p1()
 
     @XBlock.handler
     def lti_launch_callback(self, request, suffix=''):  # pylint: disable=unused-argument
@@ -918,7 +926,7 @@ class LtiConsumerXBlock(StudioEditableXBlockMixin, XBlock):
             "launch_request": lti_consumer.generate_launch_request(
                 user_id=self.runtime.user_id,
                 roles=["Student"],
-                resource_link=str(self.location),
+                resource_link=str(self.location),  # pylint: disable=no-member
                 preflight_response=request.GET
             )
         })

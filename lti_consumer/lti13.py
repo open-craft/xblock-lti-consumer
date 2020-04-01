@@ -39,7 +39,7 @@ LTI_BASE_MESSAGE = {
     # This is useful for error redirects
     # http://www.imsglobal.org/spec/lti/v1p3/#launch-presentation-claim
     "https://purl.imsglobal.org/spec/lti/claim/launch_presentation": {
-        "document_target": "iframe", # iframe, frame, window
+        "document_target": "iframe",  # iframe, frame, window
         # Endpoint to redirect the user to after completing LTI task
         # Returns with log statements
         "return_url": "https://platform.example.edu/terms/201601/courses/7/sections/1/resources/2"
@@ -50,6 +50,7 @@ LTI_BASE_MESSAGE = {
         "request_url": "https://tool.com/link/123"
     }
 }
+
 
 class LtiConsumer1p3:
     def __init__(
