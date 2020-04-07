@@ -5,19 +5,16 @@
         <title>LTI</title>
     </head>
     <body>
-        <a href="${oidc_url}">
-            Launch OIDC Request
+        <a id="launch-link" href="${oidc_url}">
+            Click here to launch activity.
         </a>
-
-        <p>
-            <b>User ID: </b>${user}
-        </p>
-
-        <p>
-            <a href="${keyset_url}">
-                Public Signing Keyset URL:
-            </a>
-            ${keyset_url}
-        </p>
+        <script type="text/javascript">
+            (function (d) {
+                var element = d.getElementById("launch-link");
+                if (element) {
+                    element.click();
+                }
+            }(document));
+        </script>
     </body>
 </html>

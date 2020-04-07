@@ -6,6 +6,8 @@ from Crypto.PublicKey import RSA
 from jwkest.jwk import RSAKey
 from jwkest.jws import JWS
 import json
+import time
+
 from jwkest import jwk
 
 
@@ -17,38 +19,6 @@ LTI_BASE_MESSAGE = {
     # LTI Claim version
     # http://www.imsglobal.org/spec/lti/v1p3/#lti-version-claim
     "https://purl.imsglobal.org/spec/lti/claim/version": "1.3.0",
-
-    # Optional claims - useless ones
-    # "https://purl.imsglobal.org/spec/lti/claim/context": {
-    #     "id": "c1d887f0-a1a3-4bca-ae25-c375edcc131a",
-    #     "label": "ECON 1010",
-    #     "title": "Economics as a Social Science",
-    #     "type": ["http://purl.imsglobal.org/vocab/lis/v2/course#CourseOffering"]
-    # },
-    # "https://purl.imsglobal.org/spec/lti/claim/tool_platform": {
-    #     "guid": "ex/48bbb541-ce55-456e-8b7d-ebc59a38d435",
-    #     "contact_email": "support@platform.example.edu",
-    #     "description": "An Example Tool Platform",
-    #     "name": "Example Tool Platform",
-    #     "url": "https://platform.example.edu",
-    #     "product_family_code": "ExamplePlatformVendor-Product",
-    #     "version": "1.0"
-    # },
-
-    # Optional claims - Useful
-    # This is useful for error redirects
-    # http://www.imsglobal.org/spec/lti/v1p3/#launch-presentation-claim
-    "https://purl.imsglobal.org/spec/lti/claim/launch_presentation": {
-        "document_target": "iframe",  # iframe, frame, window
-        # Endpoint to redirect the user to after completing LTI task
-        # Returns with log statements
-        "return_url": "https://platform.example.edu/terms/201601/courses/7/sections/1/resources/2"
-    },
-    # Custom variables :)
-    "https://purl.imsglobal.org/spec/lti/claim/custom": {
-        "xstart": "2017-04-21T01:00:00Z",
-        "request_url": "https://tool.com/link/123"
-    }
 }
 
 
@@ -58,28 +28,50 @@ class LtiConsumer1p3:
             iss,
             lti_oidc_url,
             lti_launch_url,
+            client_id,
             deployment_id,
             rsa_key,
+            rsa_key_id
     ):
+        """
+        Initialize LTI 1.3 Consumer class
+        """
         self.iss = iss
         self.oidc_url = lti_oidc_url
         self.launch_url = lti_launch_url
+        self.client_id = client_id
         self.deployment_id = deployment_id
 
         # Generate JWK from RSA key
         self.jwk = RSAKey(
-            # Don't hardcode key name
-            kid="lti_key",
+            # Using the same key ID as client id
+            # This way we can easily serve multiple public
+            # keys on teh same endpoint and keep all
+            # LTI 1.3 blocks working
+            kid=rsa_key_id,
             key=RSA.import_key(rsa_key)
         )
 
+        # IMS LTI Claim data
+        self.lti_claim_user_data = None
+        self.lti_claim_launch_presentation = None
+        self.lti_claim_custom_parameters = None
+
     def _encode_and_sign(self, message):
-        # Dump JSON and encode it with key
-        msg = json.dumps(message)
+        """
+        Encode and sign JSON with RSA key
+        """
+        msg = message.copy()
+
+        # Add exp and iat attributes
+        msg.update({
+            "iat": round(time.time()),
+            "exp": round(time.time()) + 3600
+        })
 
         # The class instance that sets up the signing operation
         # An RS 256 key is required for LTI 1.3
-        _jws = JWS(msg, alg="RS256")
+        _jws = JWS(msg, alg="RS256", cty="JWT")
 
         # Encode and sign LTI message
         return _jws.sign_compact([self.jwk])
@@ -92,20 +84,39 @@ class LtiConsumer1p3:
         Used in roles claim: should return array of URI values
         for roles that the user has within the message's context.
 
+        Supported roles:
+        * Core - Administrator
+        * Institution - Instructor (non-core role)
+        * Institution - Student
+
         Reference: http://www.imsglobal.org/spec/lti/v1p3/#roles-claim
         Role vocabularies: http://www.imsglobal.org/spec/lti/v1p3/#role-vocabularies
         """
-        return [
-            "http://purl.imsglobal.org/vocab/lis/v2/institution/person#Student",
-            "http://purl.imsglobal.org/vocab/lis/v2/membership#Learner",
-            "http://purl.imsglobal.org/vocab/lis/v2/membership#Mentor"
+        role_map = {
+            'staff': 'http://purl.imsglobal.org/vocab/lis/v2/system/person#Administrator',
+            'instructor': 'http://purl.imsglobal.org/vocab/lis/v2/institution/person#Instructor',
+        }
+
+        # Every user is at least a student
+        lti_user_roles = [
+            'http://purl.imsglobal.org/vocab/lis/v2/institution/person#Student'
         ]
 
-    def preprare_preflight_request(
-        self,
-        callback_url,
-        hint="oidc_hint",
-        lti_hint="lti_hint"
+        try:
+            for role in roles:
+                lti_role = role_map.get(role)
+                if lti_role:
+                    lti_user_roles.append(lti_role)
+
+            return lti_user_roles
+        except:
+            raise ValueError("Invalid role list provided.")
+
+    def prepare_preflight_request(
+            self,
+            callback_url,
+            hint="hint",
+            lti_hint="lti_hint"
     ):
         """
         Generates OIDC url with parameters
@@ -113,6 +124,8 @@ class LtiConsumer1p3:
         oidc_url = self.oidc_url + "?"
         parameters = {
             "iss": self.iss,
+            "client_id": self.client_id,
+            "lti_deployment_id": self.deployment_id,
             "target_link_uri": callback_url,
             "login_hint": hint,
             "lti_message_hint": lti_hint
@@ -122,29 +135,103 @@ class LtiConsumer1p3:
             "oidc_url": oidc_url + urlencode(parameters),
         }
 
-    def generate_launch_request(
-        self,
-        user_id,
-        roles,
-        resource_link,
-        preflight_response,
+    def set_user_data(
+            self,
+            user_id,
+            roles,
+            full_name=None,
+            email_address=None
     ):
-        data = {
-            **LTI_BASE_MESSAGE,
+        """
+        Set user data/roles and convert to IMS Specification
 
+        User Claim doc: http://www.imsglobal.org/spec/lti/v1p3/#user-identity-claims
+        Roles Claim doc: http://www.imsglobal.org/spec/lti/v1p3/#roles-claim
+        """
+        self.lti_claim_user_data = {
+            # User identity claims
+            # sub: locally stable identifier for user that initiated the launch
+            "sub": user_id,
+
+            # Roles claim
+            # Array of URI values for roles that the user has within the message's context
+            "https://purl.imsglobal.org/spec/lti/claim/roles": self._get_user_roles(roles)
+        }
+
+        # Additonal user identity claims
+        # Optional user data that can be sent to the tool, if the block is configured to do so
+        if full_name:
+            self.lti_claim_user_data.update({
+                "name": full_name,
+            })
+
+        if email_address:
+            self.lti_claim_user_data.update({
+                "email": email_address,
+            })
+
+    def set_launch_presentation_claim(
+            self,
+            document_target="iframe"
+    ):
+        """
+        Optional: Set launch presentation claims
+
+        http://www.imsglobal.org/spec/lti/v1p3/#launch-presentation-claim
+        """
+        if document_target not in ['iframe', 'frame', 'window']:
+            raise ValueError("Invalid launch presentation format.")
+
+        self.lti_claim_launch_presentation = {
+            # Launch presentation claim
+            "https://purl.imsglobal.org/spec/lti/claim/launch_presentation": {
+                # Can be one of: iframe, frame, window
+                "document_target": document_target,
+            },
+        }
+
+    def set_custom_parameters(
+            self,
+            custom_parameters
+    ):
+        """
+        Stores custom parameters configured for LTI launch
+        """
+        if not isinstance(custom_parameters, dict):
+            raise ValueError("Custom parameters must be a key/value dictionary.")
+
+        self.lti_claim_custom_parameters = {
+            "https://purl.imsglobal.org/spec/lti/claim/custom": custom_parameters
+        }
+
+    def generate_launch_request(
+            self,
+            preflight_response,
+            resource_link
+    ):
+        """
+        Build LTI message from class parameters
+
+        This will add all required parameters from the LTI 1.3 spec and any additional ones set in
+        the configuration and JTW encode the message using the provided key.
+        """
+        # Start from base message
+        lti_message = LTI_BASE_MESSAGE.copy()
+
+        # TODO: Validate preflight response
+        # Add base parameters
+        lti_message.update({
             # Issuer
             "iss": self.iss,
 
             # Nonce from OIDC preflight launch request
             "nonce": preflight_response.get("nonce"),
 
-            # Todo: fix audience
-            "aud": ["openedx"],
-
-            # User identity claims
-            # sub: locally stable identifier for user that initiated the launch
-            # http://www.imsglobal.org/spec/lti/v1p3/#user-identity-claims
-            "sub": user_id,
+            # JWT aud and azp
+            "aud": [
+                self.client_id
+            ],
+            "azp": self.client_id,
 
             # LTI Deployment ID Claim:
             # String that identifies the platform-tool integration governing the message
@@ -156,10 +243,6 @@ class LtiConsumer1p3:
             # http://www.imsglobal.org/spec/lti/v1p3/#target-link-uri
             "https://purl.imsglobal.org/spec/lti/claim/target_link_uri": self.launch_url,
 
-            # Roles claim: array of URI values for roles that the user has within the message's context
-            # http://www.imsglobal.org/spec/lti/v1p3/#roles-claim
-            "https://purl.imsglobal.org/spec/lti/claim/roles": self._get_user_roles(roles),
-
             # Resource link: stable and unique to each deployment_id
             # This value MUST change if the link is copied or exported from one system or
             # context and imported into another system or context
@@ -167,16 +250,32 @@ class LtiConsumer1p3:
             "https://purl.imsglobal.org/spec/lti/claim/resource_link": {
                 "id": resource_link,
                 # Optional claims
-                # "description": "Assignment to introduce who you are",
                 # "title": "Introduction Assignment"
+                # "description": "Assignment to introduce who you are",
             },
+        })
 
-        }
+        # Check if user data is set, then append it to lti message
+        # Raise if isn't set, since some user data is required for the launch
+        if self.lti_claim_user_data:
+            lti_message.update(self.lti_claim_user_data)
+        else:
+            raise "Required user data isn't set."
+
+        # Set optional claims
+        # Launch presentation claim
+        if self.lti_claim_launch_presentation:
+            lti_message.update(self.lti_claim_launch_presentation)
+
+        # Custom variables claim
+        if self.lti_claim_custom_parameters:
+            lti_message.update(self.lti_claim_custom_parameters)
 
         return {
             "state": preflight_response.get("state"),
-            "id_token": self._encode_and_sign(data)
+            "id_token": self._encode_and_sign(lti_message)
         }
+
 
     def get_public_keyset(self):
         """

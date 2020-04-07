@@ -276,7 +276,7 @@ class LtiConsumerXBlock(StudioEditableXBlockMixin, XBlock):
         scope=Scope.settings
     )
 
-    # LTI 1.3 modified fields
+    # LTI 1.3 fields
     lti_version = String(
         display_name=_("LTI Version"),
         scope=Scope.settings,
@@ -301,17 +301,22 @@ class LtiConsumerXBlock(StudioEditableXBlockMixin, XBlock):
         default='',
         scope=Scope.settings
     )
-    lti_1p3_platform_key = String(
-        display_name=_("LTI 1.3 Platform Key"),
-        default=RSA.generate(2048).export_key('PEM'),
-        scope=Scope.settings
-    )
-    lti_1p3_deployment_id = String(
-        display_name=_("LTI 1.3 Deployment ID"),
+    # Client ID and block key
+    lti_1p3_client_id = String(
+        display_name=_("LTI 1.3 Block Client ID"),
         default=str(uuid.uuid4()),
         scope=Scope.settings
     )
+    # This key isn't editable, and should be regenerated
+    # for every block created (and not be carried over)
+    # This isn't what happens right now though
+    lti_1p3_block_key = String(
+        display_name=_("LTI 1.3 Block Key"),
+        default=RSA.generate(2048).export_key('PEM'),
+        scope=Scope.settings
+    )
 
+    # LTI 1.1 fields
     lti_id = String(
         display_name=_("LTI ID"),
         help=_(
@@ -339,6 +344,8 @@ class LtiConsumerXBlock(StudioEditableXBlockMixin, XBlock):
         default='',
         scope=Scope.settings
     )
+
+    # Misc
     custom_parameters = List(
         display_name=_("Custom Parameters"),
         help=_(
@@ -477,13 +484,15 @@ class LtiConsumerXBlock(StudioEditableXBlockMixin, XBlock):
 
     # Possible editable fields
     editable_field_names = (
-        'display_name', 'description', 'lti_id', 'launch_url', 'custom_parameters',
-        'launch_target', 'button_text', 'inline_height', 'modal_height', 'modal_width',
-        'has_score', 'weight', 'hide_launch', 'accept_grades_past_due', 'ask_to_send_username',
-        'ask_to_send_email', 'enable_processors',
+        'display_name', 'description',
         # LTI 1.3 variables
         'lti_version', 'lti_1p3_launch_url', 'lti_1p3_oidc_url', 'lti_1p3_tool_public_key',
-        'lti_1p3_platform_key', 'lti_1p3_deployment_id',
+        # LTI 1.1 variables
+        'lti_id', 'launch_url',
+        # Other parameters
+        'custom_parameters', 'launch_target', 'button_text', 'inline_height', 'modal_height',
+        'modal_width', 'has_score', 'weight', 'hide_launch', 'accept_grades_past_due',
+        'ask_to_send_username', 'ask_to_send_email', 'enable_processors',
     )
 
     @staticmethod
@@ -828,8 +837,8 @@ class LtiConsumerXBlock(StudioEditableXBlockMixin, XBlock):
         fragment = Fragment()
         loader = ResourceLoader(__name__)
         context = {
-            "client": "openedx",
-            "deployment_id": self.lti_1p3_deployment_id,
+            "client": self.lti_1p3_client_id,
+            "deployment_id": "1",
             "keyset_url": self.keyset_url,
             "oidc_callback": self.consumer_launch_url,
             "launch_url": self.consumer_launch_url,
@@ -847,16 +856,18 @@ class LtiConsumerXBlock(StudioEditableXBlockMixin, XBlock):
         Instanced from parameters from XBlock
         """
         return LtiConsumer1p3(
-            'http://localhost:18000',
-            self.lti_1p3_oidc_url,
-            self.lti_1p3_launch_url,
-            self.lti_1p3_deployment_id,
-            self.lti_1p3_platform_key
+            iss='http://localhost:18000',
+            lti_oidc_url=self.lti_1p3_oidc_url,
+            lti_launch_url=self.lti_1p3_launch_url,
+            client_id=self.lti_1p3_client_id,
+            deployment_id="1",
+            rsa_key=self.lti_1p3_block_key,
+            rsa_key_id=self.lti_1p3_client_id
         )
 
     def _launch_lti_1p1(self):
         """
-        Handler that prepares the LTI 1.1 Lauch
+        Handler that prepares the LTI 1.1 Launch
         """
         lti_consumer = LtiConsumer(self)
         lti_parameters = lti_consumer.get_signed_lti_parameters()
@@ -870,18 +881,14 @@ class LtiConsumerXBlock(StudioEditableXBlockMixin, XBlock):
         """
         Handler that prepares the LTI 1.3.
 
-        This prepares a page to make the OIDC preflight request
+        This prepares a page to make the OIDC preflight request.
         """
         lti_consumer = self._get_lti1p3_consumer()
-        loader = ResourceLoader(__name__)
-        context = lti_consumer.preprare_preflight_request(
+        context = lti_consumer.prepare_preflight_request(
             self.consumer_launch_url
         )
 
-        context.update({
-            'keyset_url': self.keyset_url,
-            'user': self.runtime.user_id
-        })
+        loader = ResourceLoader(__name__)
         template = loader.render_mako_template('/templates/html/lti_1p3_oidc.html', context)
         return Response(template, content_type='text/html')
 
@@ -909,24 +916,38 @@ class LtiConsumerXBlock(StudioEditableXBlockMixin, XBlock):
     @XBlock.handler
     def lti_launch_callback(self, request, suffix=''):  # pylint: disable=unused-argument
         """
-        XBlock handler for launching the LTI provider.
+        XBlock handler for launching the LTI 1.3 tool.
+
+        This endpoint is only valid when a LTI 1.3 tool is being used.
 
         Returns:
-            webob.response: HTML LTI launch form
+            webob.response: HTML LTI launch form or error page if misconfigured
         """
         if self.lti_version != "lti_1p3":
             return Response('', content_type='text/html')
 
-        lti_consumer = self._get_lti1p3_consumer()
         loader = ResourceLoader(__name__)
         context = {}
+
+        lti_consumer = self._get_lti1p3_consumer()
+
+        # Pass user data
+        lti_consumer.set_user_data(
+            user_id=self.runtime.user_id,
+            roles=[self.runtime.get_user_role()]
+        )
+
+        # Set launch context
+        # Hardcoded for now, but we need to translate from
+        # self.launch_target to one of the LTI compliant names,
+        # either `iframe`, `frame` or `window`
+        # This is optional though
+        lti_consumer.set_launch_presentation_claim('iframe')
 
         context.update({
             "preflight_response": dict(request.GET),
             "launch_request": lti_consumer.generate_launch_request(
-                user_id=self.runtime.user_id,
-                roles=["Student"],
-                resource_link=str(self.location),  # pylint: disable=no-member
+                resource_link=self.resource_link_id,
                 preflight_response=request.GET
             )
         })
