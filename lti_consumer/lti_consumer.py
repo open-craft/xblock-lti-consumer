@@ -903,8 +903,8 @@ class LtiConsumerXBlock(StudioEditableXBlockMixin, XBlock):
         lti_consumer = self._get_lti1p3_consumer()
         context = lti_consumer.prepare_preflight_request(
             callback_url=self.consumer_launch_url,
-            hint=str(self.location),
-            lti_hint=str(self.location)
+            hint=six.text_type(self.location),  # pylint: disable=no-member
+            lti_hint=six.text_type(self.location)  # pylint: disable=no-member
         )
 
         loader = ResourceLoader(__name__)

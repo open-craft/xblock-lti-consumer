@@ -1,13 +1,17 @@
-from django.conf import settings
+"""
+LTI 1.3 Consumer implementation
+"""
 
-from urllib.parse import urlencode
+import json
+import time
+
+# Quality checks failing due to know pylint bug
+# pylint: disable=relative-import
+from six.moves.urllib.parse import urlencode
 
 from Crypto.PublicKey import RSA
 from jwkest.jwk import RSAKey
 from jwkest.jws import JWS
-import json
-import time
-
 from jwkest import jwk
 
 
@@ -22,7 +26,10 @@ LTI_BASE_MESSAGE = {
 }
 
 
-class LtiConsumer1p3:
+class LtiConsumer1p3(object):
+    """
+    LTI 1.3 Consumer Implementation
+    """
     def __init__(
             self,
             iss,
@@ -95,7 +102,7 @@ class LtiConsumer1p3:
         role_map = {
             'staff': 'http://purl.imsglobal.org/vocab/lis/v2/system/person#Administrator',
             'instructor': 'http://purl.imsglobal.org/vocab/lis/v2/institution/person#Instructor',
-            'student':'http://purl.imsglobal.org/vocab/lis/v2/institution/person#Student'
+            'student': 'http://purl.imsglobal.org/vocab/lis/v2/institution/person#Student'
         }
 
         lti_user_roles = []
@@ -272,7 +279,6 @@ class LtiConsumer1p3:
             "state": preflight_response.get("state"),
             "id_token": self._encode_and_sign(lti_message)
         }
-
 
     def get_public_keyset(self):
         """
