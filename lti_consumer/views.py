@@ -1,8 +1,11 @@
-from django.urls import reverse
-from django.http import HttpResponse, JsonResponse
+"""
+LTI consumer plugin passthrough views
+"""
 
-from opaque_keys.edx.keys import UsageKey
-from lms.djangoapps.courseware.module_render import (
+from django.http import HttpResponse
+
+from opaque_keys.edx.keys import UsageKey  # pylint: disable=import-error
+from lms.djangoapps.courseware.module_render import (  # pylint: disable=import-error
     handle_xblock_callback,
     handle_xblock_callback_noauth,
 )
