@@ -95,13 +95,10 @@ class LtiConsumer1p3:
         role_map = {
             'staff': 'http://purl.imsglobal.org/vocab/lis/v2/system/person#Administrator',
             'instructor': 'http://purl.imsglobal.org/vocab/lis/v2/institution/person#Instructor',
+            'student':'http://purl.imsglobal.org/vocab/lis/v2/institution/person#Student'
         }
 
-        # Every user is at least a student
-        lti_user_roles = [
-            'http://purl.imsglobal.org/vocab/lis/v2/institution/person#Student'
-        ]
-
+        lti_user_roles = []
         try:
             for role in roles:
                 lti_role = role_map.get(role)

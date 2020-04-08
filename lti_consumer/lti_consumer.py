@@ -613,6 +613,23 @@ class LtiConsumerXBlock(StudioEditableXBlockMixin, XBlock):
         return ROLE_MAP.get(self.runtime.get_user_role(), u'Student')
 
     @property
+    def user_roles(self):
+        """
+        Get system user role and convert it to LTI 1.3 user roles.
+        """
+        roles = ['student']
+
+        if self.runtime.get_user_role() == 'instructor':
+            # Instructor have both instructor and administrator
+            # permissions on LTI tool.
+            roles.extend([
+                'instructor',
+                'staff'
+            ])
+
+        return roles
+
+    @property
     def course(self):
         """
         Return course by course id.
@@ -885,7 +902,9 @@ class LtiConsumerXBlock(StudioEditableXBlockMixin, XBlock):
         """
         lti_consumer = self._get_lti1p3_consumer()
         context = lti_consumer.prepare_preflight_request(
-            self.consumer_launch_url
+            callback_url=self.consumer_launch_url,
+            hint=str(self.location),
+            lti_hint=str(self.location)
         )
 
         loader = ResourceLoader(__name__)
@@ -934,7 +953,7 @@ class LtiConsumerXBlock(StudioEditableXBlockMixin, XBlock):
         # Pass user data
         lti_consumer.set_user_data(
             user_id=self.runtime.user_id,
-            roles=[self.runtime.get_user_role()]
+            roles=self.user_roles
         )
 
         # Set launch context
