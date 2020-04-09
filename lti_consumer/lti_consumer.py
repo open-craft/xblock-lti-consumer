@@ -724,9 +724,9 @@ class LtiConsumerXBlock(StudioEditableXBlockMixin, XBlock):
     @property
     def consumer_launch_url(self):
         """
-        XBlock Consumer launch handler url
+        LTI 1.3 Consumer launch handler url
         """
-        return get_lms_lti_launch_link(self.location)  # pylint: disable=no-member
+        return get_lms_lti_launch_link()  # pylint: disable=no-member
 
     @property
     def keyset_url(self):

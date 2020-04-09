@@ -20,6 +20,7 @@ def get_lms_base():
     """
     return settings.LMS_BASE
 
+
 def get_lms_lti_keyset_link(location):
     """
     Returns an LMS link to LTI public keyset endpoint
@@ -31,7 +32,8 @@ def get_lms_lti_keyset_link(location):
         location=text_type(location),
     )
 
-def get_lms_lti_launch_link(location):
+
+def get_lms_lti_launch_link():
     """
     Returns an LMS link to LTI Launch endpoint
 
