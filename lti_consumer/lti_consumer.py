@@ -77,7 +77,12 @@ from .lti import LtiConsumer
 from .lti13 import LtiConsumer1p3
 from .oauth import log_authorization_header
 from .outcomes import OutcomeService
-from .utils import _
+from .utils import (
+    _,
+    get_lms_base,
+    get_lms_lti_keyset_link,
+    get_lms_lti_launch_link,
+)
 
 
 log = logging.getLogger(__name__)
@@ -721,21 +726,14 @@ class LtiConsumerXBlock(StudioEditableXBlockMixin, XBlock):
         """
         XBlock Consumer launch handler url
         """
-        return self.runtime.handler_url(
-            self,
-            "lti_launch_handler"
-        ).rstrip('/?')
+        return get_lms_lti_launch_link(self.location)  # pylint: disable=no-member
 
     @property
     def keyset_url(self):
         """
         LTI 1.3 Public Keyset URL
         """
-        return self.runtime.handler_url(
-            self,
-            "public_keyset_endpoint",
-            thirdparty=True
-        ).rstrip('/?')
+        return get_lms_lti_keyset_link(self.location)  # pylint: disable=no-member
 
     @property
     def outcome_service_url(self):
@@ -873,7 +871,7 @@ class LtiConsumerXBlock(StudioEditableXBlockMixin, XBlock):
         Instanced from parameters from XBlock
         """
         return LtiConsumer1p3(
-            iss='http://localhost:18000',
+            iss=get_lms_base(),
             lti_oidc_url=self.lti_1p3_oidc_url,
             lti_launch_url=self.lti_1p3_launch_url,
             client_id=self.lti_1p3_client_id,
