@@ -47,10 +47,7 @@ setup(
         ],
         'lms.djangoapp': [
             "lti_consumer = lti_consumer:LTIConsumerApp",
-        ],
-        'cms.djangoapp': [
-            "lti_consumer = lti_consumer:LTIConsumerApp",
-        ],
+        ]
     },
     package_data=package_data("lti_consumer", ["static", "templates", "public", "translations"]),
 )
