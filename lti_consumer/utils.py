@@ -27,7 +27,7 @@ def get_lms_lti_keyset_link(location):
 
     :param location: the location of the block
     """
-    return u"http://{lms_base}/api/lti_consumer/v1/public_keysets/{location}".format(
+    return u"https://{lms_base}/api/lti_consumer/v1/public_keysets/{location}".format(
         lms_base=get_lms_base(),
         location=text_type(location),
     )
@@ -39,6 +39,6 @@ def get_lms_lti_launch_link():
 
     :param location: the location of the block
     """
-    return u"http://{lms_base}/api/lti_consumer/v1/launch/".format(
+    return u"https://{lms_base}/api/lti_consumer/v1/launch/".format(
         lms_base=get_lms_base(),
     )
