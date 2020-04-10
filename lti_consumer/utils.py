@@ -3,7 +3,6 @@
 Utility functions for LTI Consumer block
 """
 from six import text_type
-# These imports are WIP until a better way of constructing LMS URLs from Studio is found
 from django.conf import settings
 
 
@@ -17,8 +16,13 @@ def _(text):
 def get_lms_base():
     """
     Returns LMS base url to be used as issuer on OAuth2 flows
+
+    TODO: This needs to be improved and account for Open edX sites and
+    organizations.
+    One possible improvement is to use `contentstore.get_lms_link_for_item`
+    and strip the base domain name.
     """
-    return settings.LMS_BASE
+    return settings.LMS_ROOT_URL
 
 
 def get_lms_lti_keyset_link(location):
@@ -27,7 +31,7 @@ def get_lms_lti_keyset_link(location):
 
     :param location: the location of the block
     """
-    return u"https://{lms_base}/api/lti_consumer/v1/public_keysets/{location}".format(
+    return u"{lms_base}/api/lti_consumer/v1/public_keysets/{location}".format(
         lms_base=get_lms_base(),
         location=text_type(location),
     )
@@ -39,6 +43,6 @@ def get_lms_lti_launch_link():
 
     :param location: the location of the block
     """
-    return u"https://{lms_base}/api/lti_consumer/v1/launch/".format(
+    return u"{lms_base}/api/lti_consumer/v1/launch/".format(
         lms_base=get_lms_base(),
     )
