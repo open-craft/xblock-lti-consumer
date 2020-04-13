@@ -1,7 +1,6 @@
 """
 LTI 1.3 Consumer implementation
 """
-
 import json
 import time
 
@@ -14,16 +13,7 @@ from jwkest.jwk import RSAKey
 from jwkest.jws import JWS
 from jwkest import jwk
 
-
-LTI_BASE_MESSAGE = {
-    # Claim type: fixed key with value `LtiResourceLinkRequest`
-    # http://www.imsglobal.org/spec/lti/v1p3/#message-type-claim
-    "https://purl.imsglobal.org/spec/lti/claim/message_type": "LtiResourceLinkRequest",
-
-    # LTI Claim version
-    # http://www.imsglobal.org/spec/lti/v1p3/#lti-version-claim
-    "https://purl.imsglobal.org/spec/lti/claim/version": "1.3.0",
-}
+from .constants import LTI_1P3_ROLE_MAP, LTI_BASE_MESSAGE
 
 
 class LtiConsumer1p3(object):
@@ -72,8 +62,8 @@ class LtiConsumer1p3(object):
 
         # Add exp and iat attributes
         msg.update({
-            "iat": round(time.time()),
-            "exp": round(time.time()) + 3600
+            "iat": int(round(time.time())),
+            "exp": int(round(time.time()) + 3600)
         })
 
         # The class instance that sets up the signing operation
@@ -99,22 +89,18 @@ class LtiConsumer1p3(object):
         Reference: http://www.imsglobal.org/spec/lti/v1p3/#roles-claim
         Role vocabularies: http://www.imsglobal.org/spec/lti/v1p3/#role-vocabularies
         """
-        role_map = {
-            'staff': 'http://purl.imsglobal.org/vocab/lis/v2/system/person#Administrator',
-            'instructor': 'http://purl.imsglobal.org/vocab/lis/v2/institution/person#Instructor',
-            'student': 'http://purl.imsglobal.org/vocab/lis/v2/institution/person#Student'
-        }
-
         lti_user_roles = []
-        try:
-            for role in roles:
-                lti_role = role_map.get(role)
-                if lti_role:
-                    lti_user_roles.append(lti_role)
+        for role in roles:
+            # Raise expection if invalid role list provided
+            if role not in LTI_1P3_ROLE_MAP.keys():
+                raise ValueError("Invalid role list provided.")
 
-            return lti_user_roles
-        except:
-            raise ValueError("Invalid role list provided.")
+            # Else look up user role and append to dict
+            lti_role = LTI_1P3_ROLE_MAP.get(role)
+            if lti_role:
+                lti_user_roles.append(lti_role)
+
+        return lti_user_roles
 
     def prepare_preflight_request(
             self,
@@ -264,7 +250,7 @@ class LtiConsumer1p3(object):
         if self.lti_claim_user_data:
             lti_message.update(self.lti_claim_user_data)
         else:
-            raise "Required user data isn't set."
+            raise ValueError("Required user data isn't set.")
 
         # Set optional claims
         # Launch presentation claim

@@ -21,7 +21,7 @@ class LTIConsumerApp(AppConfig):
             'lms.djangoapp': {
                 'namespace': 'lti_consumer',
                 'regex': '^api/',
-                'relative_path': 'urls',
+                'relative_path': 'plugin.urls',
             }
         }
     }

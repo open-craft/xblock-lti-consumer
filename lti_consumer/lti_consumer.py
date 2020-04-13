@@ -74,7 +74,7 @@ from xblockutils.studio_editable import StudioEditableXBlockMixin
 
 from .exceptions import LtiError
 from .lti import LtiConsumer
-from .lti13 import LtiConsumer1p3
+from .lti_1p3.consumer import LtiConsumer1p3
 from .oauth import log_authorization_header
 from .outcomes import OutcomeService
 from .utils import (
@@ -941,7 +941,7 @@ class LtiConsumerXBlock(StudioEditableXBlockMixin, XBlock):
             webob.response: HTML LTI launch form or error page if misconfigured
         """
         if self.lti_version != "lti_1p3":
-            return Response('', content_type='text/html')
+            return Response(status=404)
 
         loader = ResourceLoader(__name__)
         context = {}
@@ -1155,6 +1155,7 @@ class LtiConsumerXBlock(StudioEditableXBlockMixin, XBlock):
         sanitized_comment = bleach.clean(self.score_comment, tags=allowed_tags, attributes=allowed_attributes)
 
         return {
+            'lti_version': self.lti_version,
             'launch_url': self.launch_url.strip(),
             'element_id': self.location.html_id(),  # pylint: disable=no-member
             'element_class': self.category,  # pylint: disable=no-member
