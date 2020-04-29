@@ -15,6 +15,7 @@ from jwkest.jwk import load_jwks
 from jwkest.jws import JWS
 
 from lti_consumer.lti_1p3.consumer import LtiConsumer1p3
+from lti_consumer.utils import validate_preflight_response
 
 
 # Variables required for testing and verification
@@ -73,7 +74,7 @@ class TestLti1p3Consumer(TestCase):
         parameters, but allows overriding them.
         """
         if preflight_response is None:
-            preflight_response = {"nonce": "", "state": ""}
+            preflight_response = {"nonce": "1234", "state": "bbbb"}
 
         return self.lti_consumer.generate_launch_request(
             preflight_response,
@@ -91,6 +92,22 @@ class TestLti1p3Consumer(TestCase):
 
         return JWS().verify_compact(token, keys=key_set)
 
+    @ddt.data(
+        ({}, True),
+        ({"nonce": "1234"}, True),
+        ({"state": "bbbb"}, True),
+        ({"nonce": "", "state": "bbbb"}, True),
+        ({"nonce": "1234", "state": ""}, True),
+        ({"nonce": "1234", "state": "bbbb"}, False),
+    )
+    @ddt.unpack
+    def test_preflight_validation(self, preflight_response, expected):
+        if expected:
+            with self.assertRaises(ValueError):
+                validate_preflight_response(preflight_response)
+        else:
+            validate_preflight_response(preflight_response)
+        
     @ddt.data(
         (
             'student',

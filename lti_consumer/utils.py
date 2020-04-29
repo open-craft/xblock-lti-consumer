@@ -46,3 +46,18 @@ def get_lms_lti_launch_link():
     return u"{lms_base}/api/lti_consumer/v1/launch/".format(
         lms_base=get_lms_base(),
     )
+
+
+def validate_preflight_response(response):
+    """
+    Validates a preflight response to be used in a launch request
+
+    Raises ValueError in case of validation failure
+
+    :param response: the preflight response to be validated
+    """
+    try:
+        assert response.get("nonce")
+        assert response.get("state")
+    except AssertionError:
+        raise ValueError("Preflight reponse failed validation")

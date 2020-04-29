@@ -14,6 +14,7 @@ from jwkest.jws import JWS
 from jwkest import jwk
 
 from .constants import LTI_1P3_ROLE_MAP, LTI_BASE_MESSAGE
+from ..utils import validate_preflight_response
 
 
 class LtiConsumer1p3(object):
@@ -199,10 +200,12 @@ class LtiConsumer1p3(object):
         This will add all required parameters from the LTI 1.3 spec and any additional ones set in
         the configuration and JTW encode the message using the provided key.
         """
+        # Validate preflight response
+        validate_preflight_response(preflight_response)
+
         # Start from base message
         lti_message = LTI_BASE_MESSAGE.copy()
 
-        # TODO: Validate preflight response
         # Add base parameters
         lti_message.update({
             # Issuer
