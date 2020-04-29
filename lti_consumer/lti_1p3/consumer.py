@@ -5,7 +5,6 @@ import json
 import time
 
 # Quality checks failing due to know pylint bug
-# pylint: disable=relative-import
 from six.moves.urllib.parse import urlencode
 
 from Crypto.PublicKey import RSA
@@ -17,7 +16,7 @@ from .constants import LTI_1P3_ROLE_MAP, LTI_BASE_MESSAGE
 from ..utils import validate_preflight_response
 
 
-class LtiConsumer1p3(object):
+class LtiConsumer1p3:
     """
     LTI 1.3 Consumer Implementation
     """
