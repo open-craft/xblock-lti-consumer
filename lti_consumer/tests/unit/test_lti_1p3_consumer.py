@@ -23,6 +23,8 @@ OIDC_URL = "http://test-platform/oidc"
 LAUNCH_URL = "http://test-platform/launch"
 CLIENT_ID = "1"
 DEPLOYMENT_ID = "1"
+NONCE = "1234"
+STATE = "ABCD"
 # Consider storing a fixed key
 RSA_KEY_ID = "1"
 RSA_KEY = RSA.generate(2048).export_key('PEM')
@@ -73,7 +75,12 @@ class TestLti1p3Consumer(TestCase):
         parameters, but allows overriding them.
         """
         if preflight_response is None:
-            preflight_response = {"nonce": "1234", "state": "bbbb"}
+            preflight_response = {
+                "client_id": CLIENT_ID,
+                "redirect_uri": LAUNCH_URL,
+                "nonce": NONCE,
+                "state": STATE
+            }
 
         return self.lti_consumer.generate_launch_request(
             preflight_response,
@@ -92,20 +99,20 @@ class TestLti1p3Consumer(TestCase):
         return JWS().verify_compact(token, keys=key_set)
 
     @ddt.data(
-        ({}, True),
-        ({"nonce": "1234"}, True),
-        ({"state": "bbbb"}, True),
-        ({"nonce": "", "state": "bbbb"}, True),
-        ({"nonce": "1234", "state": ""}, True),
-        ({"nonce": "1234", "state": "bbbb"}, False),
+        ({"client_id": CLIENT_ID, "redirect_uri": LAUNCH_URL, "nonce": STATE, "state": STATE}, True),
+        ({"client_id": "2", "redirect_uri": LAUNCH_URL, "nonce": STATE, "state": STATE}, False),
+        ({"client_id": CLIENT_ID, "redirect_uri": LAUNCH_URL[::-1], "nonce": STATE, "state": STATE}, False),
+        ({"redirect_uri": LAUNCH_URL, "nonce": NONCE, "state": STATE}, False),
+        ({"client_id": CLIENT_ID, "nonce": NONCE, "state": STATE}, False),
+        ({"client_id": CLIENT_ID, "redirect_uri": LAUNCH_URL, "state": STATE}, False),
+        ({"client_id": CLIENT_ID, "redirect_uri": LAUNCH_URL, "nonce": NONCE}, False),
     )
     @ddt.unpack
-    def test_preflight_validation(self, preflight_response, expected):
-        if expected:
-            with self.assertRaises(ValueError):
-                self.lti_consumer._validate_preflight_response(preflight_response)  # pylint: disable=protected-access
-        else:
-            self.lti_consumer._validate_preflight_response(preflight_response)  # pylint: disable=protected-access
+    def test_preflight_validation(self, preflight_response, success):
+        if success:
+            return self.lti_consumer._validate_preflight_response(preflight_response)  # pylint: disable=protected-access
+        with self.assertRaises(ValueError):
+            return self.lti_consumer._validate_preflight_response(preflight_response)  # pylint: disable=protected-access
 
     @ddt.data(
         (
@@ -269,6 +276,8 @@ class TestLti1p3Consumer(TestCase):
         self._setup_lti_user()
         launch_request = self._get_lti_message(
             preflight_response={
+                "client_id": "1",
+                "redirect_uri": "http://test-platform/launch",
                 "nonce": "test",
                 "state": "state"
             },
