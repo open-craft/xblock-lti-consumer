@@ -15,7 +15,6 @@ from jwkest.jwk import load_jwks
 from jwkest.jws import JWS
 
 from lti_consumer.lti_1p3.consumer import LtiConsumer1p3
-from lti_consumer.utils import validate_preflight_response
 
 
 # Variables required for testing and verification
@@ -104,10 +103,10 @@ class TestLti1p3Consumer(TestCase):
     def test_preflight_validation(self, preflight_response, expected):
         if expected:
             with self.assertRaises(ValueError):
-                validate_preflight_response(preflight_response)
+                self.lti_consumer._validate_preflight_response(preflight_response)  # pylint: disable=protected-access
         else:
-            validate_preflight_response(preflight_response)
-        
+            self.lti_consumer._validate_preflight_response(preflight_response)  # pylint: disable=protected-access
+
     @ddt.data(
         (
             'student',

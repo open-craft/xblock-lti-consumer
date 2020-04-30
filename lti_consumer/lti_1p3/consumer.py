@@ -13,7 +13,6 @@ from jwkest.jws import JWS
 from jwkest import jwk
 
 from .constants import LTI_1P3_ROLE_MAP, LTI_BASE_MESSAGE
-from ..utils import validate_preflight_response
 
 
 class LtiConsumer1p3:
@@ -200,7 +199,7 @@ class LtiConsumer1p3:
         the configuration and JTW encode the message using the provided key.
         """
         # Validate preflight response
-        validate_preflight_response(preflight_response)
+        self._validate_preflight_response(preflight_response)
 
         # Start from base message
         lti_message = LTI_BASE_MESSAGE.copy()
@@ -275,3 +274,17 @@ class LtiConsumer1p3:
         public_keys = jwk.KEYS()
         public_keys.append(self.jwk)
         return json.loads(public_keys.dump_jwks())
+
+    def _validate_preflight_response(self, response):
+        """
+        Validates a preflight response to be used in a launch request
+
+        Raises ValueError in case of validation failure
+
+        :param response: the preflight response to be validated
+        """
+        try:
+            assert response.get("nonce")
+            assert response.get("state")
+        except AssertionError:
+            raise ValueError("Preflight reponse failed validation")
