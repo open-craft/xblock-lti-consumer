@@ -284,7 +284,11 @@ class TestLtiConsumer(TestLtiConsumerXBlock):
         mock_clear.assert_called_with(user)
         self.assertEqual(response, {})
 
-    @patch('lti_consumer.lti_consumer.log')
+    @patch('lti_consumer.lti_consumer_base.log')
+    @patch(
+        'lti_consumer.lti_consumer_xblock.LtiConsumerXBlock.lti_provider_key_secret',
+        PropertyMock(return_value=('t', 's'))
+    )
     def test_verify_result_headers_verify_content_type_true(self, mock_log):
         """
         Test wrong content type raises exception if `verify_content_type` is True
@@ -296,7 +300,7 @@ class TestLtiConsumer(TestLtiConsumerXBlock):
 
         assert mock_log.error.called
 
-    @patch('lti_consumer.lti_consumer.verify_oauth_body_signature', Mock(return_value=True))
+    @patch('lti_consumer.lti_consumer_base.verify_oauth_body_signature', Mock(return_value=True))
     @patch(
         'lti_consumer.lti_consumer_xblock.LtiConsumerXBlock.lti_provider_key_secret',
         PropertyMock(return_value=('t', 's'))
@@ -311,7 +315,7 @@ class TestLtiConsumer(TestLtiConsumerXBlock):
 
         self.assertTrue(response)
 
-    @patch('lti_consumer.lti_consumer.verify_oauth_body_signature', Mock(return_value=True))
+    @patch('lti_consumer.lti_consumer_base.verify_oauth_body_signature', Mock(return_value=True))
     @patch(
         'lti_consumer.lti_consumer_xblock.LtiConsumerXBlock.lti_provider_key_secret',
         PropertyMock(return_value=('t', 's'))
@@ -326,12 +330,12 @@ class TestLtiConsumer(TestLtiConsumerXBlock):
 
         self.assertTrue(response)
 
-    @patch('lti_consumer.lti_consumer.verify_oauth_body_signature', Mock(side_effect=LtiError))
+    @patch('lti_consumer.lti_consumer_base.verify_oauth_body_signature', Mock(side_effect=LtiError))
     @patch(
         'lti_consumer.lti_consumer_xblock.LtiConsumerXBlock.lti_provider_key_secret',
         PropertyMock(return_value=('t', 's'))
     )
-    @patch('lti_consumer.lti_consumer.log')
+    @patch('lti_consumer.lti_consumer_base.log')
     def test_verify_result_headers_lti_error(self, mock_log):
         """
         Test exception raised if request header verification raises error
@@ -344,12 +348,12 @@ class TestLtiConsumer(TestLtiConsumerXBlock):
 
         assert mock_log.error.called
 
-    @patch('lti_consumer.lti_consumer.verify_oauth_body_signature', Mock(side_effect=ValueError))
+    @patch('lti_consumer.lti_consumer_base.verify_oauth_body_signature', Mock(side_effect=ValueError))
     @patch(
         'lti_consumer.lti_consumer_xblock.LtiConsumerXBlock.lti_provider_key_secret',
         PropertyMock(return_value=('t', 's'))
     )
-    @patch('lti_consumer.lti_consumer.log')
+    @patch('lti_consumer.lti_consumer_base.log')
     def test_verify_result_headers_value_error(self, mock_log):
         """
         Test exception raised if request header verification raises error

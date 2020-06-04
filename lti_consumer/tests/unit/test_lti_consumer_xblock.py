@@ -890,7 +890,7 @@ class TestProcessorSettings(TestLtiConsumerXBlock):
             'lti_consumer.tests.unit.test_utils:non_existent',
         ],
     })
-    @patch('lti_consumer.lti_consumer.log')
+    @patch('lti_consumer.lti_consumer_xblock.log')
     def test_faulty_configs(self, settings, mock_log):
         self.xblock.enable_processors = True
         with patch('lti_consumer.lti_consumer_xblock.LtiConsumerXBlock.get_settings', return_value=settings):

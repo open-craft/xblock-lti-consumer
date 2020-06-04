@@ -61,7 +61,7 @@ def patch_signed_parameters(func):
     Prepare the patches for the get_signed_lti_parameters function for tests.
     """
     func = patch(
-        'lti_consumer.lti_consumer.get_oauth_request_signature',
+        'lti_consumer.lti_consumer_base.get_oauth_request_signature',
         Mock(return_value=(
             'OAuth oauth_nonce="fake_nonce", '
             'oauth_timestamp="fake_timestamp", oauth_version="fake_version", oauth_signature_method="fake_method", '
