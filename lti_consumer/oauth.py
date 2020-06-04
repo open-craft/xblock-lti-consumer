@@ -8,9 +8,9 @@ import base64
 import hashlib
 import logging
 
+import six
 import six.moves.urllib.error
 import six.moves.urllib.parse
-import six
 from oauthlib import oauth1
 
 from .exceptions import LtiError
@@ -76,7 +76,7 @@ def verify_oauth_body_signature(request, lti_provider_secret, service_url):
         with content types other than application/x-www-form-urlencoded.
 
     Arguments:
-        request (xblock.django.request.DjangoWebobRequest): Request object for current HTTP request
+        request (webob.Request): Request object for current HTTP request
         lti_provider_secret (str): Secret key for the LTI provider
         service_url (str): URL that the request was made to
         content_type (str): HTTP content type of the request
@@ -141,7 +141,7 @@ def log_authorization_header(request, client_key, client_secret):
     the request header and body according to OAuth 1 Body signing
 
     Arguments:
-        request (xblock.django.request.DjangoWebobRequest):  Request object to log Authorization header for
+        request (webob.Request):  Request object to log Authorization header for
 
     Returns:
         nothing
