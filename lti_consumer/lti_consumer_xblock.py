@@ -57,10 +57,10 @@ import re
 from collections import namedtuple
 from importlib import import_module
 
-import bleach
-import six
 import six.moves.urllib.error
 import six.moves.urllib.parse
+import six
+import bleach
 from django.utils import timezone
 from web_fragments.fragment import Fragment
 from webob import Response

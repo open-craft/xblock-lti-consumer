@@ -10,13 +10,10 @@ from __future__ import absolute_import, unicode_literals
 import json
 import logging
 
-import six.moves.urllib.error
-import six.moves.urllib.parse
 from six import text_type
 
 from .exceptions import LtiError
 from .lti_consumer_base import LtiConsumerBase
-from .oauth import get_oauth_request_signature, verify_oauth_body_signature
 
 log = logging.getLogger(__name__)
 

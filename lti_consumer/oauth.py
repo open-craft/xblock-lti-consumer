@@ -8,9 +8,9 @@ import base64
 import hashlib
 import logging
 
-import six
 import six.moves.urllib.error
 import six.moves.urllib.parse
+import six
 from oauthlib import oauth1
 
 from .exceptions import LtiError

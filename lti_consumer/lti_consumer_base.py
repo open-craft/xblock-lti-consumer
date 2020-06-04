@@ -7,7 +7,6 @@ https://www.imsglobal.org/activity/learning-tools-interoperability
 
 from __future__ import absolute_import, unicode_literals
 
-import json
 import logging
 
 import six.moves.urllib.error
@@ -82,22 +81,22 @@ class LtiConsumerBase(object):  # pylint: disable=bad-option-value, useless-obje
         return {}
 
     def get_signed_lti_parameters(
-        self,
-        lti_launch_url,
-        oauth_key,
-        oauth_secret,
-        user_id,
-        roles,
-        resource_link_id,
-        lis_result_sourcedid,
-        context_id,
-        context_title,
-        context_label,
-        launch_presentation_return_url='',
-        lis_outcome_service_url=None,
-        lis_person_sourcedid=None,
-        lis_person_contact_email_primary=None,
-        launch_presentation_locale=None
+            self,
+            lti_launch_url,
+            oauth_key,
+            oauth_secret,
+            user_id,
+            roles,
+            resource_link_id,
+            lis_result_sourcedid,
+            context_id,
+            context_title,
+            context_label,
+            launch_presentation_return_url='',
+            lis_outcome_service_url=None,
+            lis_person_sourcedid=None,
+            lis_person_contact_email_primary=None,
+            launch_presentation_locale=None
     ):
         """
         Signs LTI launch request and returns signature and OAuth parameters.
@@ -193,7 +192,7 @@ class LtiConsumerBase(object):  # pylint: disable=bad-option-value, useless-obje
         if verify_content_type and content_type != LtiConsumerBase.CONTENT_TYPE_RESULT_JSON:
             log.error("[LTI]: v2.0 result service -- bad Content-Type: %s", content_type)
             error_msg = "For LTI 2.0 result service, Content-Type must be {}.  Got {}".format(
-                LtiConsumer.CONTENT_TYPE_RESULT_JSON,
+                LtiConsumerBase.CONTENT_TYPE_RESULT_JSON,
                 content_type
             )
             raise LtiError(error_msg)

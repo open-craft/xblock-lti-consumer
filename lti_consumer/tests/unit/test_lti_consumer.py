@@ -297,7 +297,10 @@ class TestLtiConsumer(TestLtiConsumerXBlock):
         assert mock_log.error.called
 
     @patch('lti_consumer.lti_consumer.verify_oauth_body_signature', Mock(return_value=True))
-    @patch('lti_consumer.lti_consumer_xblock.LtiConsumerXBlock.lti_provider_key_secret', PropertyMock(return_value=('t', 's')))
+    @patch(
+        'lti_consumer.lti_consumer_xblock.LtiConsumerXBlock.lti_provider_key_secret',
+        PropertyMock(return_value=('t', 's'))
+    )
     def test_verify_result_headers_verify_content_type_false(self):
         """
         Test content type check skipped if `verify_content_type` is False
@@ -309,7 +312,10 @@ class TestLtiConsumer(TestLtiConsumerXBlock):
         self.assertTrue(response)
 
     @patch('lti_consumer.lti_consumer.verify_oauth_body_signature', Mock(return_value=True))
-    @patch('lti_consumer.lti_consumer_xblock.LtiConsumerXBlock.lti_provider_key_secret', PropertyMock(return_value=('t', 's')))
+    @patch(
+        'lti_consumer.lti_consumer_xblock.LtiConsumerXBlock.lti_provider_key_secret',
+        PropertyMock(return_value=('t', 's'))
+    )
     def test_verify_result_headers_valid(self):
         """
         Test True is returned if request is valid
@@ -321,7 +327,10 @@ class TestLtiConsumer(TestLtiConsumerXBlock):
         self.assertTrue(response)
 
     @patch('lti_consumer.lti_consumer.verify_oauth_body_signature', Mock(side_effect=LtiError))
-    @patch('lti_consumer.lti_consumer_xblock.LtiConsumerXBlock.lti_provider_key_secret', PropertyMock(return_value=('t', 's')))
+    @patch(
+        'lti_consumer.lti_consumer_xblock.LtiConsumerXBlock.lti_provider_key_secret',
+        PropertyMock(return_value=('t', 's'))
+    )
     @patch('lti_consumer.lti_consumer.log')
     def test_verify_result_headers_lti_error(self, mock_log):
         """
@@ -336,7 +345,10 @@ class TestLtiConsumer(TestLtiConsumerXBlock):
         assert mock_log.error.called
 
     @patch('lti_consumer.lti_consumer.verify_oauth_body_signature', Mock(side_effect=ValueError))
-    @patch('lti_consumer.lti_consumer_xblock.LtiConsumerXBlock.lti_provider_key_secret', PropertyMock(return_value=('t', 's')))
+    @patch(
+        'lti_consumer.lti_consumer_xblock.LtiConsumerXBlock.lti_provider_key_secret',
+        PropertyMock(return_value=('t', 's'))
+    )
     @patch('lti_consumer.lti_consumer.log')
     def test_verify_result_headers_value_error(self, mock_log):
         """
