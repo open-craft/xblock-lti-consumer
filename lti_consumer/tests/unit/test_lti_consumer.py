@@ -1,914 +1,351 @@
+# -*- coding: utf-8 -*-
 """
-Unit tests for LtiConsumerXBlock
+Unit tests for lti_consumer.lti_consumer module
 """
 
-from __future__ import absolute_import
+from __future__ import absolute_import, unicode_literals
 
+import unittest
 from datetime import timedelta
 
-import ddt
-import six
-from django.test.testcases import TestCase
 from django.utils import timezone
 from mock import Mock, PropertyMock, patch
+from six import text_type
+import six
 
 from lti_consumer.exceptions import LtiError
-from lti_consumer.lti_consumer import LtiConsumerXBlock, parse_handler_suffix
-from lti_consumer.tests.unit import test_utils
-from lti_consumer.tests.unit.test_utils import (FAKE_USER_ID, make_request,
-                                                make_xblock)
+from lti_consumer.lti_consumer import LtiConsumer, parse_result_json
+from lti_consumer.tests.unit.test_lti_consumer_xblock import TestLtiConsumerXBlock
+from lti_consumer.tests.unit.test_utils import (make_request,
+                                                patch_signed_parameters)
 
-HTML_PROBLEM_PROGRESS = '<div class="problem-progress">'
-HTML_ERROR_MESSAGE = '<h3 class="error_message">'
-HTML_LAUNCH_MODAL_BUTTON = 'btn-lti-modal'
-HTML_LAUNCH_NEW_WINDOW_BUTTON = 'btn-lti-new-window'
-HTML_IFRAME = '<iframe'
+INVALID_JSON_INPUTS = [
+    ([
+        u"kk",   # ValueError
+        u"{{}",  # ValueError
+        u"{}}",  # ValueError
+        3,       # TypeError
+        {},      # TypeError
+    ], u"Supplied JSON string in request body could not be decoded"),
+    ([
+        u"3",        # valid json, not array or object
+        u"[]",       # valid json, array too small
+        u"[3, {}]",  # valid json, 1st element not an object
+    ], u"Supplied JSON string is a list that does not contain an object as the first element"),
+    ([
+        u'{"@type": "NOTResult"}',  # @type key must have value 'Result'
+    ], u"JSON object does not contain correct @type attribute"),
+    ([
+        # @context missing
+        u'{"@type": "Result", "resultScore": 0.1}',
+    ], u"JSON object does not contain required key"),
+    ([
+        u'''
+        {"@type": "Result",
+         "@context": "http://purl.imsglobal.org/ctx/lis/v2/Result",
+         "resultScore": 100}'''  # score out of range
+    ], u"score value outside the permitted range of 0.0-1.0."),
+    ([
+        u'''
+        {"@type": "Result",
+         "@context": "http://purl.imsglobal.org/ctx/lis/v2/Result",
+         "resultScore": -2}'''  # score out of range
+    ], u"score value outside the permitted range of 0.0-1.0."),
+    ([
+        u'''
+        {"@type": "Result",
+         "@context": "http://purl.imsglobal.org/ctx/lis/v2/Result",
+         "resultScore": "1b"}''',   # score ValueError
+        u'''
+        {"@type": "Result",
+         "@context": "http://purl.imsglobal.org/ctx/lis/v2/Result",
+         "resultScore": {}}''',   # score TypeError
+    ], u"Could not convert resultScore to float"),
+]
+
+VALID_JSON_INPUTS = [
+    (u'''
+    {"@type": "Result",
+     "@context": "http://purl.imsglobal.org/ctx/lis/v2/Result",
+     "resultScore": 0.1}''', 0.1, u""),  # no comment means we expect ""
+    (u'''
+    [{"@type": "Result",
+     "@context": "http://purl.imsglobal.org/ctx/lis/v2/Result",
+     "@id": "anon_id:abcdef0123456789",
+     "resultScore": 0.1}]''', 0.1, u""),  # OK to have array of objects -- just take the first.  @id is okay too
+    (u'''
+    {"@type": "Result",
+     "@context": "http://purl.imsglobal.org/ctx/lis/v2/Result",
+     "resultScore": 0.1,
+     "comment": "ಠ益ಠ"}''', 0.1, u"ಠ益ಠ"),  # unicode comment
+    (u'''
+    {"@type": "Result",
+     "@context": "http://purl.imsglobal.org/ctx/lis/v2/Result"}''', None, u""),  # no score means we expect None
+    (u'''
+    {"@type": "Result",
+     "@context": "http://purl.imsglobal.org/ctx/lis/v2/Result",
+     "resultScore": 0.0}''', 0.0, u""),  # test lower score boundary
+    (u'''
+    {"@type": "Result",
+     "@context": "http://purl.imsglobal.org/ctx/lis/v2/Result",
+     "resultScore": 1.0}''', 1.0, u""),  # test upper score boundary
+]
+
+GET_RESULT_RESPONSE = {
+    "@context": "http://purl.imsglobal.org/ctx/lis/v2/Result",
+    "@type": "Result",
+}
 
 
-class TestLtiConsumerXBlock(TestCase):
+class TestParseResultJson(unittest.TestCase):
     """
-    Unit tests for LtiConsumerXBlock.max_score()
-    """
-
-    def setUp(self):
-        super(TestLtiConsumerXBlock, self).setUp()
-        self.xblock_attributes = {
-            'launch_url': 'http://www.example.com',
-        }
-        self.xblock = make_xblock('lti_consumer', LtiConsumerXBlock, self.xblock_attributes)
-
-
-class TestProperties(TestLtiConsumerXBlock):
-    """
-    Unit tests for LtiConsumerXBlock properties
-    """
-
-    def test_descriptor(self):
-        """
-        Test `descriptor` returns the XBLock object
-        """
-        self.assertEqual(self.xblock.descriptor, self.xblock)
-
-    def test_workbench_scenarios(self):
-        """
-        Basic tests that `workbench_scenarios()` returns a well formed scenario.
-        """
-        scenarios = self.xblock.workbench_scenarios()
-        assert isinstance(scenarios, list)
-        assert len(scenarios) == 1, 'Keep it to a single scenario with multiple squences.'
-
-        scenario = scenarios[0]
-        assert scenario[0] == 'LTI Consumer XBlock'
-        assert '<lti_consumer' in scenario[1]
-
-    def test_settings(self):
-        """
-        Test that the XBlock is using the SettingsService correctly.
-        """
-        sample_settings_bucket = {
-            'parameter_processors': [],
-        }
-
-        self.xblock.runtime.service = Mock(
-            return_value=Mock(
-                get_settings_bucket=Mock(return_value=sample_settings_bucket)
-            )
-        )
-
-        assert self.xblock.get_settings() == sample_settings_bucket
-
-    def test_settings_without_service(self):
-        """
-        Test that the XBlock can work without the SettingsService.
-        """
-        self.xblock.runtime.service = Mock(return_value=None)
-        assert self.xblock.get_settings() == {}
-
-    def test_context_id(self):
-        """
-        Test `context_id` returns unicode course id
-        """
-        self.assertEqual(self.xblock.context_id, six.text_type(self.xblock.course_id))  # pylint: disable=no-member
-
-    def test_validate(self):
-        """
-        Test that if custom_parameters is empty string, a validation error is added
-        """
-        self.xblock.custom_parameters = ''
-        validation = self.xblock.validate()
-        self.assertFalse(validation.empty)
-
-    def test_role(self):
-        """
-        Test `role` returns the correct LTI role string
-        """
-        self.xblock.runtime.get_user_role.return_value = 'student'
-        self.assertEqual(self.xblock.role, 'Student')
-
-        self.xblock.runtime.get_user_role.return_value = 'guest'
-        self.assertEqual(self.xblock.role, 'Student')
-
-        self.xblock.runtime.get_user_role.return_value = 'staff'
-        self.assertEqual(self.xblock.role, 'Administrator')
-
-        self.xblock.runtime.get_user_role.return_value = 'instructor'
-        self.assertEqual(self.xblock.role, 'Instructor')
-
-    def test_course(self):
-        """
-        Test `course` calls modulestore.get_course
-        """
-        mock_get_course = self.xblock.runtime.descriptor_runtime.modulestore.get_course
-        mock_get_course.return_value = None
-        course = self.xblock.course
-
-        self.assertTrue(mock_get_course.called)
-        self.assertIsNone(course)
-
-    @patch('lti_consumer.lti_consumer.LtiConsumerXBlock.course')
-    def test_lti_provider_key_secret(self, mock_course):
-        """
-        Test `lti_provider_key_secret` returns correct key and secret
-        """
-        provider = 'lti_provider'
-        key = 'test'
-        secret = 'secret'
-        self.xblock.lti_id = provider
-        type(mock_course).lti_passports = PropertyMock(return_value=["{}:{}:{}".format(provider, key, secret)])
-        lti_provider_key, lti_provider_secret = self.xblock.lti_provider_key_secret
-
-        self.assertEqual(lti_provider_key, key)
-        self.assertEqual(lti_provider_secret, secret)
-
-    @patch('lti_consumer.lti_consumer.LtiConsumerXBlock.course')
-    def test_lti_provider_key_secret_not_found(self, mock_course):
-        """
-        Test `lti_provider_key_secret` returns correct key and secret
-        """
-        provider = 'lti_provider'
-        key = 'test'
-        secret = 'secret'
-        self.xblock.lti_id = 'wrong_provider'
-        type(mock_course).lti_passports = PropertyMock(return_value=["{}:{}:{}".format(provider, key, secret)])
-        lti_provider_key, lti_provider_secret = self.xblock.lti_provider_key_secret
-
-        self.assertEqual(lti_provider_key, '')
-        self.assertEqual(lti_provider_secret, '')
-
-    @patch('lti_consumer.lti_consumer.LtiConsumerXBlock.course')
-    def test_lti_provider_key_secret_corrupt_lti_passport(self, mock_course):
-        """
-        Test `lti_provider_key_secret` when a corrupt lti_passport is encountered
-        """
-        provider = 'lti_provider'
-        key = 'test'
-        secret = 'secret'
-        self.xblock.lti_id = provider
-        type(mock_course).lti_passports = PropertyMock(return_value=["{}{}{}".format(provider, key, secret)])
-
-        with self.assertRaises(LtiError):
-            _, _ = self.xblock.lti_provider_key_secret
-
-    def test_user_id(self):
-        """
-        Test `user_id` returns the user_id string
-        """
-        self.xblock.runtime.anonymous_student_id = FAKE_USER_ID
-        self.assertEqual(self.xblock.user_id, FAKE_USER_ID)
-
-    def test_user_id_url_encoded(self):
-        """
-        Test `user_id` url encodes the user id
-        """
-        self.xblock.runtime.anonymous_student_id = 'user_id?&. '
-        self.assertEqual(self.xblock.user_id, 'user_id%3F%26.%20')
-
-    def test_user_id_none(self):
-        """
-        Test `user_id` raises LtiError when the user id cannot be returned
-        """
-        self.xblock.runtime.anonymous_student_id = None
-        with self.assertRaises(LtiError):
-            __ = self.xblock.user_id
-
-    def test_resource_link_id(self):
-        """
-        Test `resource_link_id` returns appropriate string
-        """
-        self.assertEqual(
-            self.xblock.resource_link_id,
-            "{}-{}".format(self.xblock.runtime.hostname, self.xblock.location.html_id())  # pylint: disable=no-member
-        )
-
-    @patch('lti_consumer.lti_consumer.LtiConsumerXBlock.context_id')
-    @patch('lti_consumer.lti_consumer.LtiConsumerXBlock.resource_link_id')
-    @patch('lti_consumer.lti_consumer.LtiConsumerXBlock.user_id', PropertyMock(return_value=FAKE_USER_ID))
-    def test_lis_result_sourcedid(self, mock_resource_link_id, mock_context_id):
-        """
-        Test `lis_result_sourcedid` returns appropriate string
-        """
-        mock_resource_link_id.__get__ = Mock(return_value='resource_link_id')
-        mock_context_id.__get__ = Mock(return_value='context_id')
-
-        self.assertEqual(self.xblock.lis_result_sourcedid, "context_id:resource_link_id:{}".format(FAKE_USER_ID))
-
-    def test_outcome_service_url(self):
-        """
-        Test `outcome_service_url` calls `runtime.handler_url` with thirdparty kwarg
-        """
-        handler_url = 'http://localhost:8005/outcome_service_handler'
-        self.xblock.runtime.handler_url = Mock(return_value="{}/?".format(handler_url))
-        url = self.xblock.outcome_service_url
-
-        self.xblock.runtime.handler_url.assert_called_with(self.xblock, 'outcome_service_handler', thirdparty=True)
-        self.assertEqual(url, handler_url)
-
-    def test_result_service_url(self):
-        """
-        Test `result_service_url` calls `runtime.handler_url` with thirdparty kwarg
-        """
-        handler_url = 'http://localhost:8005/result_service_handler'
-        self.xblock.runtime.handler_url = Mock(return_value="{}/?".format(handler_url))
-        url = self.xblock.result_service_url
-
-        self.xblock.runtime.handler_url.assert_called_with(self.xblock, 'result_service_handler', thirdparty=True)
-        self.assertEqual(url, handler_url)
-
-    def test_prefixed_custom_parameters(self):
-        """
-        Test `prefixed_custom_parameters` appropriately prefixes the configured custom params
-        """
-        self.xblock.custom_parameters = ['param_1=true', 'param_2 = false', 'lti_version=1.1']
-        params = self.xblock.prefixed_custom_parameters
-
-        self.assertEqual(params, {u'custom_param_1': u'true', u'custom_param_2': u'false', u'lti_version': u'1.1'})
-
-    def test_invalid_custom_parameter(self):
-        """
-        Test `prefixed_custom_parameters` when a custom parameter has been configured with the wrong format
-        """
-        self.xblock.custom_parameters = ['param_1=true', 'param_2=false', 'lti_version1.1']
-
-        with self.assertRaises(LtiError):
-            __ = self.xblock.prefixed_custom_parameters
-
-    def test_is_past_due_no_due_date(self):
-        """
-        Test `is_past_due` is False when there is no due date
-        """
-        self.xblock.due = None
-        self.xblock.graceperiod = timedelta(days=1)
-
-        self.assertFalse(self.xblock.is_past_due)
-
-    def test_is_past_due_with_graceperiod(self):
-        """
-        Test `is_past_due` when a graceperiod has been defined
-        """
-        now = timezone.now()
-        self.xblock.graceperiod = timedelta(days=1)
-
-        self.xblock.due = now
-        self.assertFalse(self.xblock.is_past_due)
-
-        self.xblock.due = now - timedelta(days=2)
-        self.assertTrue(self.xblock.is_past_due)
-
-    def test_is_past_due_no_graceperiod(self):
-        """
-        Test `is_past_due` when no graceperiod has been defined
-        """
-        now = timezone.now()
-        self.xblock.graceperiod = None
-
-        self.xblock.due = now - timedelta(days=1)
-        self.assertTrue(self.xblock.is_past_due)
-
-        self.xblock.due = now + timedelta(days=1)
-        self.assertFalse(self.xblock.is_past_due)
-
-    def test_is_past_due_timezone_now_called(self):
-        """
-        Test `is_past_due` calls django.utils.timezone.now to get current datetime
-        """
-        now = timezone.now()
-        self.xblock.graceperiod = None
-        self.xblock.due = now
-        with patch('lti_consumer.lti_consumer.timezone.now', wraps=timezone.now) as mock_timezone_now:
-            __ = self.xblock.is_past_due
-            self.assertTrue(mock_timezone_now.called)
-
-
-class TestEditableFields(TestLtiConsumerXBlock):
-    """
-    Unit tests for LtiConsumerXBlock.editable_fields
+    Unit tests for `lti_consumer.lti_consumer.parse_result_json`
     """
 
-    def get_mock_lti_configuration(self, editable):
+    def test_invalid_json(self):
         """
-        Returns a mock object of lti-configuration service
+        Test invalid json raises exception
+        """
+        for error_inputs, error_message in INVALID_JSON_INPUTS:
+            for error_input in error_inputs:
+                with six.assertRaisesRegex(self, LtiError, error_message):
+                    parse_result_json(error_input)
 
-        Arguments:
-            editable (bool): This indicates whether the LTI fields (i.e. 'ask_to_send_username' and
-            'ask_to_send_email') are editable.
+    def test_valid_json(self):
         """
-        lti_configuration = Mock()
-        lti_configuration.configuration = Mock()
-        lti_configuration.configuration.lti_access_to_learners_editable = Mock(
-            return_value=editable
-        )
-        return lti_configuration
-
-    def are_fields_editable(self, fields):
+        Test valid json returns expected values
         """
-        Returns whether the fields passed in as an argument, are editable.
-
-        Arguments:
-            fields (list): list containing LTI Consumer XBlock's field names.
-        """
-        return all(field in self.xblock.editable_fields for field in fields)
-
-    def test_editable_fields_with_no_config(self):
-        """
-        Test that LTI XBlock's fields (i.e. 'ask_to_send_username' and 'ask_to_send_email')
-        are editable when lti-configuration service is not provided.
-        """
-        self.xblock.runtime.service.return_value = None
-        # Assert that 'ask_to_send_username' and 'ask_to_send_email' are editable.
-        self.assertTrue(self.are_fields_editable(fields=['ask_to_send_username', 'ask_to_send_email']))
-
-    def test_editable_fields_when_editing_allowed(self):
-        """
-        Test that LTI XBlock's fields (i.e. 'ask_to_send_username' and 'ask_to_send_email')
-        are editable when this XBlock is configured to allow it.
-        """
-        # this XBlock is configured to allow editing of LTI fields
-        self.xblock.runtime.service.return_value = self.get_mock_lti_configuration(editable=True)
-        # Assert that 'ask_to_send_username' and 'ask_to_send_email' are editable.
-        self.assertTrue(self.are_fields_editable(fields=['ask_to_send_username', 'ask_to_send_email']))
-
-    def test_editable_fields_when_editing_not_allowed(self):
-        """
-        Test that LTI XBlock's fields (i.e. 'ask_to_send_username' and 'ask_to_send_email')
-        are not editable when this XBlock is configured to not to allow it.
-        """
-        # this XBlock is configured to not to allow editing of LTI fields
-        self.xblock.runtime.service.return_value = self.get_mock_lti_configuration(editable=False)
-        # Assert that 'ask_to_send_username' and 'ask_to_send_email' are not editable.
-        self.assertFalse(self.are_fields_editable(fields=['ask_to_send_username', 'ask_to_send_email']))
+        for json_str, expected_score, expected_comment in VALID_JSON_INPUTS:
+            score, comment = parse_result_json(json_str)
+            self.assertEqual(score, expected_score)
+            self.assertEqual(comment, expected_comment)
 
 
-class TestStudentView(TestLtiConsumerXBlock):
+class TestLtiConsumer(TestLtiConsumerXBlock):
     """
-    Unit tests for LtiConsumerXBlock.student_view()
-    """
-
-    def test_has_score_false(self):
-        """
-        Test `has_score` is True
-        """
-        self.xblock.has_score = False
-        fragment = self.xblock.student_view({})
-
-        self.assertNotIn(HTML_PROBLEM_PROGRESS, fragment.content)
-
-    def test_has_score_true(self):
-        """
-        Test `has_score` is True and `weight` has been configured
-        """
-        self.xblock.has_score = True
-        fragment = self.xblock.student_view({})
-
-        self.assertIn(HTML_PROBLEM_PROGRESS, fragment.content)
-
-    def test_launch_target_iframe(self):
-        """
-        Test when `launch_target` is iframe
-        """
-        self.xblock.launch_target = 'iframe'
-        fragment = self.xblock.student_view({})
-
-        self.assertNotIn(HTML_LAUNCH_MODAL_BUTTON, fragment.content)
-        self.assertNotIn(HTML_LAUNCH_NEW_WINDOW_BUTTON, fragment.content)
-        self.assertIn(HTML_IFRAME, fragment.content)
-
-    def test_launch_target_modal(self):
-        """
-        Test when `launch_target` is modal
-        """
-        self.xblock.launch_target = 'modal'
-        fragment = self.xblock.student_view({})
-
-        self.assertIn(HTML_LAUNCH_MODAL_BUTTON, fragment.content)
-        self.assertNotIn(HTML_LAUNCH_NEW_WINDOW_BUTTON, fragment.content)
-        self.assertIn(HTML_IFRAME, fragment.content)
-
-    def test_launch_target_new_window(self):
-        """
-        Test when `launch_target` is iframe
-        """
-        self.xblock.launch_target = 'new_window'
-        fragment = self.xblock.student_view({})
-
-        self.assertIn(HTML_LAUNCH_NEW_WINDOW_BUTTON, fragment.content)
-        self.assertNotIn(HTML_LAUNCH_MODAL_BUTTON, fragment.content)
-        self.assertNotIn(HTML_IFRAME, fragment.content)
-
-    def test_no_launch_url(self):
-        """
-        Test `launch_url` has not been configured
-        """
-        self.xblock.launch_url = ''
-        fragment = self.xblock.student_view({})
-
-        self.assertIn(HTML_ERROR_MESSAGE, fragment.content)
-
-    def test_no_launch_url_hide_launch_true(self):
-        """
-        Test `launch_url` has not been configured and `hide_launch` is True
-        """
-        self.xblock.launch_url = ''
-        self.xblock.hide_launch = True
-        fragment = self.xblock.student_view({})
-
-        self.assertNotIn(HTML_ERROR_MESSAGE, fragment.content)
-
-
-class TestLtiLaunchHandler(TestLtiConsumerXBlock):
-    """
-    Unit tests for LtiConsumerXBlock.lti_launch_handler()
-    """
-
-    @patch('lti_consumer.lti.LtiConsumer.get_signed_lti_parameters')
-    def test_handle_request_called(self, mock_get_signed_lti_parameters):
-        """
-        Test LtiConsumer.get_signed_lti_parameters is called and a 200 HTML response is returned
-        """
-        request = make_request('', 'GET')
-        response = self.xblock.lti_launch_handler(request)
-
-        assert mock_get_signed_lti_parameters.called
-        self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.content_type, 'text/html')
-
-
-class TestOutcomeServiceHandler(TestLtiConsumerXBlock):
-    """
-    Unit tests for LtiConsumerXBlock.outcome_service_handler()
-    """
-
-    @patch('lti_consumer.outcomes.OutcomeService.handle_request')
-    def test_handle_request_called(self, mock_handle_request):
-        """
-        Test OutcomeService.handle_request is called and a 200 XML response is returned
-        """
-        request = make_request('', 'POST')
-        response = self.xblock.outcome_service_handler(request)
-
-        assert mock_handle_request.called
-        self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.content_type, 'application/xml')
-
-
-class TestResultServiceHandler(TestLtiConsumerXBlock):
-    """
-    Unit tests for LtiConsumerXBlock.result_service_handler()
+    Unit tests for LtiConsumer
     """
 
     def setUp(self):
-        super(TestResultServiceHandler, self).setUp()
-        self.lti_provider_key = 'test'
-        self.lti_provider_secret = 'secret'
-        self.xblock.runtime.debug = False
-        self.xblock.runtime.get_real_user = Mock()
-        self.xblock.accept_grades_past_due = True
+        super(TestLtiConsumer, self).setUp()
+        self.lti_consumer = LtiConsumer(self.xblock)
 
-    @patch('lti_consumer.lti_consumer.log_authorization_header')
-    @patch('lti_consumer.lti_consumer.LtiConsumerXBlock.lti_provider_key_secret')
-    def test_runtime_debug_true(self, mock_lti_provider_key_secret, mock_log_auth_header):
+    def _update_xblock_for_signed_parameters(self):
         """
-        Test `log_authorization_header` is called when runtime.debug is True
+        Prepare the LTI XBlock for signing the parameters.
         """
-        mock_lti_provider_key_secret.__get__ = Mock(return_value=(self.lti_provider_key, self.lti_provider_secret))
-        self.xblock.runtime.debug = True
-        request = make_request('', 'GET')
-        self.xblock.result_service_handler(request)
-
-        mock_log_auth_header.assert_called_with(request, self.lti_provider_key, self.lti_provider_secret)
-
-    @patch('lti_consumer.lti_consumer.log_authorization_header')
-    def test_runtime_debug_false(self, mock_log_auth_header):
-        """
-        Test `log_authorization_header` is not called when runtime.debug is False
-        """
-        self.xblock.runtime.debug = False
-        self.xblock.result_service_handler(make_request('', 'GET'))
-
-        assert not mock_log_auth_header.called
-
-    @patch('lti_consumer.lti_consumer.LtiConsumerXBlock.is_past_due')
-    def test_accept_grades_past_due_false_and_is_past_due_true(self, mock_is_past_due):
-        """
-        Test 404 response returned when `accept_grades_past_due` is False
-        and `is_past_due` is True
-        """
-        mock_is_past_due.__get__ = Mock(return_value=True)
-        self.xblock.accept_grades_past_due = False
-        response = self.xblock.result_service_handler(make_request('', 'GET'))
-
-        self.assertEqual(response.status_code, 404)
-
-    @patch('lti_consumer.lti.LtiConsumer.get_result')
-    @patch('lti_consumer.lti.LtiConsumer.verify_result_headers', Mock(return_value=True))
-    @patch('lti_consumer.lti_consumer.parse_handler_suffix')
-    @patch('lti_consumer.lti_consumer.LtiConsumerXBlock.is_past_due')
-    def test_accept_grades_past_due_true_and_is_past_due_true(self, mock_is_past_due, mock_parse_suffix,
-                                                              mock_get_result):
-        """
-        Test 200 response returned when `accept_grades_past_due` is True and `is_past_due` is True
-        """
-        mock_is_past_due.__get__ = Mock(return_value=True)
-        mock_parse_suffix.return_value = FAKE_USER_ID
-        mock_get_result.return_value = {}
-        response = self.xblock.result_service_handler(make_request('', 'GET'))
-
-        self.assertEqual(response.status_code, 200)
-
-    @patch('lti_consumer.lti_consumer.parse_handler_suffix')
-    def test_parse_suffix_raises_error(self, mock_parse_suffix):
-        """
-        Test 404 response returned when the user id cannot be parsed from the request path suffix
-        """
-        mock_parse_suffix.side_effect = LtiError()
-        response = self.xblock.result_service_handler(make_request('', 'GET'))
-
-        self.assertEqual(response.status_code, 404)
-
-    @patch('lti_consumer.lti.LtiConsumer.verify_result_headers')
-    @patch('lti_consumer.lti_consumer.parse_handler_suffix')
-    def test_verify_headers_raises_error(self, mock_parse_suffix, mock_verify_result_headers):
-        """
-        Test 401 response returned when `verify_result_headers` raises LtiError
-        """
-        mock_parse_suffix.return_value = FAKE_USER_ID
-        mock_verify_result_headers.side_effect = LtiError()
-        response = self.xblock.result_service_handler(make_request('', 'GET'))
-
-        self.assertEqual(response.status_code, 401)
-
-    @patch('lti_consumer.lti.LtiConsumer.verify_result_headers', Mock(return_value=True))
-    @patch('lti_consumer.lti_consumer.parse_handler_suffix')
-    def test_bad_user_id(self, mock_parse_suffix):
-        """
-        Test 404 response returned when a user cannot be found
-        """
-        mock_parse_suffix.return_value = FAKE_USER_ID
-        self.xblock.runtime.get_real_user.return_value = None
-        response = self.xblock.result_service_handler(make_request('', 'GET'))
-
-        self.assertEqual(response.status_code, 404)
-
-    @patch('lti_consumer.lti.LtiConsumer.verify_result_headers', Mock(return_value=True))
-    @patch('lti_consumer.lti_consumer.parse_handler_suffix')
-    def test_bad_request_method(self, mock_parse_suffix):
-        """
-        Test 404 response returned when the request contains an unsupported method
-        """
-        mock_parse_suffix.return_value = FAKE_USER_ID
-        response = self.xblock.result_service_handler(make_request('', 'POST'))
-
-        self.assertEqual(response.status_code, 404)
-
-    @patch('lti_consumer.lti.LtiConsumer.get_result')
-    @patch('lti_consumer.lti.LtiConsumer.verify_result_headers', Mock(return_value=True))
-    @patch('lti_consumer.lti_consumer.parse_handler_suffix')
-    def test_get_result_raises_error(self, mock_parse_suffix, mock_get_result):
-        """
-        Test 404 response returned when the LtiConsumer result service handler methods raise an exception
-        """
-        mock_parse_suffix.return_value = FAKE_USER_ID
-        mock_get_result.side_effect = LtiError()
-        response = self.xblock.result_service_handler(make_request('', 'GET'))
-
-        self.assertEqual(response.status_code, 404)
-
-    @patch('lti_consumer.lti.LtiConsumer.get_result')
-    @patch('lti_consumer.lti.LtiConsumer.verify_result_headers', Mock(return_value=True))
-    @patch('lti_consumer.lti_consumer.parse_handler_suffix')
-    def test_get_result_called(self, mock_parse_suffix, mock_get_result):
-        """
-        Test 200 response and LtiConsumer.get_result is called on a GET request
-        """
-        mock_parse_suffix.return_value = FAKE_USER_ID
-        mock_get_result.return_value = {}
-        response = self.xblock.result_service_handler(make_request('', 'GET'))
-
-        assert mock_get_result.called
-        self.assertEqual(response.status_code, 200)
-
-    @patch('lti_consumer.lti.LtiConsumer.put_result')
-    @patch('lti_consumer.lti.LtiConsumer.verify_result_headers', Mock(return_value=True))
-    @patch('lti_consumer.lti_consumer.parse_handler_suffix')
-    def test_put_result_called(self, mock_parse_suffix, mock_put_result):
-        """
-        Test 200 response and LtiConsumer.put_result is called on a PUT request
-        """
-        mock_parse_suffix.return_value = FAKE_USER_ID
-        mock_put_result.return_value = {}
-        response = self.xblock.result_service_handler(make_request('', 'PUT'))
-
-        assert mock_put_result.called
-        self.assertEqual(response.status_code, 200)
-
-    @patch('lti_consumer.lti.LtiConsumer.delete_result')
-    @patch('lti_consumer.lti.LtiConsumer.verify_result_headers', Mock(return_value=True))
-    @patch('lti_consumer.lti_consumer.parse_handler_suffix')
-    def test_delete_result_called(self, mock_parse_suffix, mock_delete_result):
-        """
-        Test 200 response and LtiConsumer.delete_result is called on a DELETE request
-        """
-        mock_parse_suffix.return_value = FAKE_USER_ID
-        mock_delete_result.return_value = {}
-        response = self.xblock.result_service_handler(make_request('', 'DELETE'))
-
-        assert mock_delete_result.called
-        self.assertEqual(response.status_code, 200)
-
-    def test_get_outcome_service_url_with_default_parameter(self):
-        """
-        Test `get_outcome_service_url` with default parameter
-        """
-        handler_url = 'http://localhost:8005/outcome_service_handler'
-        self.xblock.runtime.handler_url = Mock(return_value="{}/?".format(handler_url))
-        url = self.xblock.get_outcome_service_url()
-
-        self.xblock.runtime.handler_url.assert_called_with(self.xblock, 'outcome_service_handler', thirdparty=True)
-        self.assertEqual(url, handler_url)
-
-    def test_get_outcome_service_url_with_service_name_grade_handler(self):
-        """
-        Test `get_outcome_service_url` calls service name grade_handler
-        """
-        handler_url = 'http://localhost:8005/outcome_service_handler'
-        self.xblock.runtime.handler_url = Mock(return_value="{}/?".format(handler_url))
-        url = self.xblock.get_outcome_service_url('grade_handler')
-
-        self.xblock.runtime.handler_url.assert_called_with(self.xblock, 'outcome_service_handler', thirdparty=True)
-        self.assertEqual(url, handler_url)
-
-    def test_get_outcome_service_url_with_service_name_lti_2_0_result_rest_handler(self):
-        """
-        Test `get_outcome_service_url` calls with service name lti_2_0_result_rest_handler
-        """
-        handler_url = 'http://localhost:8005/result_service_handler'
-        self.xblock.runtime.handler_url = Mock(return_value="{}/?".format(handler_url))
-        url = self.xblock.get_outcome_service_url('lti_2_0_result_rest_handler')
-
-        self.xblock.runtime.handler_url.assert_called_with(self.xblock, 'result_service_handler', thirdparty=True)
-        self.assertEqual(url, handler_url)
-
-
-class TestMaxScore(TestLtiConsumerXBlock):
-    """
-    Unit tests for LtiConsumerXBlock.max_score()
-    """
-
-    def test_max_score_when_scored(self):
-        """
-        Test `max_score` when has_score is True
-        """
-        self.xblock.has_score = True
-        self.xblock.weight = 1.0
-
-        self.assertEqual(self.xblock.max_score(), 1.0)
-
-    def test_max_score_when_not_scored(self):
-        """
-        Test `max_score` when has_score is False
-        """
-        self.xblock.has_score = False
-        self.xblock.weight = 1.0
-
-        self.assertIsNone(self.xblock.max_score())
-
-
-class TestSetScore(TestLtiConsumerXBlock):
-    """
-    Unit tests for LtiConsumerXBlock.set_user_module_score() and LtiConsumerXBlock.clear_user_module_score()
-    """
-
-    def test_rebind_called(self):
-        """
-        Test that `runtime.rebind_noauth_module_to_user` is called
-        """
-        user = Mock(user_id=FAKE_USER_ID)
-        self.xblock.set_user_module_score(user, 0.92, 1.0, 'Great Job!')
-
-        self.xblock.runtime.rebind_noauth_module_to_user.assert_called_with(self.xblock, user)
-
-    def test_publish_grade_event_called(self):
-        """
-        Test that `runtime.publish` is called
-        """
-        user = Mock(id=FAKE_USER_ID)
-        score = 0.92
-        max_score = 1.0
-        self.xblock.set_user_module_score(user, score, max_score)
-
-        self.xblock.runtime.publish.assert_called_with(self.xblock, 'grade', {
-            'value': score,
-            'max_value': max_score,
-            'user_id': FAKE_USER_ID
-        })
-
-    def test_score_is_none(self):
-        """
-        Test when score parameter is None
-        """
-        max_score = 1.0
-        user = Mock(id=FAKE_USER_ID)
-        self.xblock.set_user_module_score(user, None, max_score)
-
-        self.assertEqual(self.xblock.module_score, None)
-
-    def test_max_score_is_none(self):
-        """
-        Test when max_score parameter is None
-        """
-        user = Mock(id=FAKE_USER_ID)
-        self.xblock.set_user_module_score(user, 0.92, None)
-
-        self.assertEqual(self.xblock.module_score, None)
-
-    def test_score_and_max_score_populated(self):
-        """
-        Test when both score and max_score parameters are not None
-        """
-        user = Mock(id=FAKE_USER_ID)
-        score = 0.92
-        max_score = 1.0
-        self.xblock.set_user_module_score(user, score, max_score)
-
-        self.assertEqual(self.xblock.module_score, score * max_score)
-
-    def test_no_comment_param(self):
-        """
-        Test when no comment parameter is passed
-        """
-        self.xblock.set_user_module_score(Mock(), 0.92, 1.0)
-
-        self.assertEqual(self.xblock.score_comment, '')
-
-    def test_comment_param(self):
-        """
-        Test when comment parameter is passed
-        """
-        comment = 'Great Job!'
-        self.xblock.set_user_module_score(Mock(), 0.92, 1.0, comment)
-
-        self.assertEqual(self.xblock.score_comment, comment)
-
-    @patch('lti_consumer.LtiConsumerXBlock.set_user_module_score')
-    def test_clear_user_module_score(self, mock_set_user_module_score):
-        """
-        Test that clear_user_module_score calls set_user_module_score with params set to None
-        """
-        user = Mock()
-        self.xblock.clear_user_module_score(user)
-        mock_set_user_module_score.assert_called_with(user, None, None)
-
-
-class TestParseSuffix(TestLtiConsumerXBlock):
-    """
-    Unit tests for parse_handler_suffix()
-    """
-
-    def test_empty_suffix(self):
-        """
-        Test `parse_handler_suffix` when `suffix` parameter is an empty string
-        """
-        with self.assertRaises(LtiError):
-            parse_handler_suffix("")
-
-    def test_suffix_no_match(self):
-        """
-        Test `parse_handler_suffix` when `suffix` cannot be parsed
-        """
-        with self.assertRaises(LtiError):
-            parse_handler_suffix("bogus_path/4")
-
-    def test_suffix_match(self):
-        """
-        Test `parse_handler_suffix` when `suffix` parameter can be parsed
-        :return:
-        """
-        parsed = parse_handler_suffix("user/{}".format(FAKE_USER_ID))
-        self.assertEqual(parsed, FAKE_USER_ID)
-
-
-@ddt.ddt
-class TestGetContext(TestLtiConsumerXBlock):
-    """
-    Unit tests for LtiConsumerXBlock._get_context_for_template()
-    """
-
-    def test_context_keys(self):
-        """
-        Test `_get_context_for_template` returns dict with correct keys
-        """
-        context_keys = (
-            'launch_url', 'element_id', 'element_class', 'launch_target', 'display_name', 'form_url', 'hide_launch',
-            'has_score', 'weight', 'module_score', 'comment', 'description', 'ask_to_send_username',
-            'ask_to_send_email', 'button_text', 'modal_vertical_offset', 'modal_horizontal_offset', 'modal_width',
-            'accept_grades_past_due'
+        self.lti_consumer.xblock.due = timezone.now()
+        self.lti_consumer.xblock.graceperiod = timedelta(days=1)
+        self.lti_consumer.xblock.has_score = True
+        self.lti_consumer.xblock.ask_to_send_username = True
+        self.lti_consumer.xblock.ask_to_send_email = True
+        self.lti_consumer.xblock.runtime.get_real_user.return_value = Mock(
+            email='edx@example.com',
+            username='edx',
+            preferences=Mock(filter=Mock(return_value=[Mock(value='en')]))
         )
-        context = self.xblock._get_context_for_template()  # pylint: disable=protected-access
 
-        for key in context_keys:
-            self.assertIn(key, context)
-
-    @ddt.data('a', 'abbr', 'acronym', 'b', 'blockquote', 'code', 'em', 'i', 'li', 'ol', 'strong', 'ul', 'img')
-    def test_comment_allowed_tags(self, tag):
+    @patch_signed_parameters
+    def test_get_signed_lti_parameters(self):
         """
-        Test that allowed tags are not escaped in context['comment']
+        Test `get_signed_lti_parameters` returns the correct dict
         """
-        comment = u'<{0}>This is a comment</{0}>!'.format(tag)
-        self.xblock.set_user_module_score(Mock(), 0.92, 1.0, comment)
-        context = self.xblock._get_context_for_template()  # pylint: disable=protected-access
+        self._update_xblock_for_signed_parameters()
+        expected_lti_parameters = {
+            text_type('user_id'): self.lti_consumer.xblock.user_id,
+            text_type('oauth_callback'): 'about:blank',
+            text_type('launch_presentation_return_url'): '',
+            text_type('lti_message_type'): 'basic-lti-launch-request',
+            text_type('lti_version'): 'LTI-1p0',
+            text_type('roles'): self.lti_consumer.xblock.role,
+            text_type('resource_link_id'): self.lti_consumer.xblock.resource_link_id,
+            text_type('lis_result_sourcedid'): self.lti_consumer.xblock.lis_result_sourcedid,
+            text_type('context_id'): self.lti_consumer.xblock.context_id,
+            text_type('lis_outcome_service_url'): self.lti_consumer.xblock.outcome_service_url,
+            text_type('custom_component_display_name'): self.lti_consumer.xblock.display_name,
+            text_type('custom_component_due_date'): self.lti_consumer.xblock.due.strftime('%Y-%m-%d %H:%M:%S'),
+            text_type('custom_component_graceperiod'): str(self.lti_consumer.xblock.graceperiod.total_seconds()),
+            'lis_person_sourcedid': 'edx',
+            'lis_person_contact_email_primary': 'edx@example.com',
+            'launch_presentation_locale': 'en',
+            text_type('custom_param_1'): 'custom1',
+            text_type('custom_param_2'): 'custom2',
+            text_type('oauth_nonce'): 'fake_nonce',
+            'oauth_timestamp': 'fake_timestamp',
+            'oauth_version': 'fake_version',
+            'oauth_signature_method': 'fake_method',
+            'oauth_consumer_key': 'fake_consumer_key',
+            'oauth_signature': 'fake_signature',
+            text_type('context_label'): self.lti_consumer.xblock.course.display_org_with_default,
+            text_type('context_title'): self.lti_consumer.xblock.course.display_name_with_default,
+        }
+        self.assertEqual(self.lti_consumer.get_signed_lti_parameters(), expected_lti_parameters)
 
-        self.assertIn('<{}>'.format(tag), context['comment'])
+        # Test that `lis_person_sourcedid`, `lis_person_contact_email_primary`, and `launch_presentation_locale`
+        # are not included in the returned LTI parameters when a user cannot be found
+        self.lti_consumer.xblock.runtime.get_real_user.return_value = {}
+        del expected_lti_parameters['lis_person_sourcedid']
+        del expected_lti_parameters['lis_person_contact_email_primary']
+        del expected_lti_parameters['launch_presentation_locale']
+        self.assertEqual(self.lti_consumer.get_signed_lti_parameters(), expected_lti_parameters)
 
-    def test_comment_retains_image_src(self):
-        """
-        Test that image tag has src and other attrs are sanitized
-        """
-        comment = u'<img src="example.com/image.jpeg" onerror="myFunction()">'
-        self.xblock.set_user_module_score(Mock(), 0.92, 1.0, comment)
-        context = self.xblock._get_context_for_template()  # pylint: disable=protected-access
-
-        self.assertIn(u'<img src="example.com/image.jpeg">', context['comment'])
-
-
-@ddt.ddt
-class TestProcessorSettings(TestLtiConsumerXBlock):
-    """
-    Unit tests for the adding custom LTI parameters.
-    """
-    settings = {
-        'parameter_processors': ['lti_consumer.tests.unit.test_utils:dummy_processor']
-    }
-
-    def test_no_processors_by_default(self):
-        processors = list(self.xblock.get_parameter_processors())
-        assert not processors, 'The processor list should empty by default.'
-
-    def test_enable_processor(self):
-        self.xblock.enable_processors = True
-        with patch('lti_consumer.lti_consumer.LtiConsumerXBlock.get_settings', return_value=self.settings):
-            processors = list(self.xblock.get_parameter_processors())
-            assert len(processors) == 1, 'One processor should be enabled'
-            # pylint: disable=bad-option-value, comparison-with-callable
-            assert processors[0] == test_utils.dummy_processor, 'Should load the correct function'
-
-    def test_disabled_processors(self):
-        self.xblock.enable_processors = False
-        with patch('lti_consumer.lti_consumer.LtiConsumerXBlock.get_settings', return_value=self.settings):
-            processors = list(self.xblock.get_parameter_processors())
-            assert not processors, 'No processor should be enabled'
-
-    @ddt.data({
-        # Bad processor list
-        'parameter_processors': False,
-    }, {
-        # Bad object path, no separator
-        'parameter_processors': [
-            'zzzzz',
-        ],
-    }, {
-        # Non-existent processor
-        'parameter_processors': [
-            'lti_consumer.tests.unit.test_utils:non_existent',
-        ],
-    })
+    @patch_signed_parameters
     @patch('lti_consumer.lti_consumer.log')
-    def test_faulty_configs(self, settings, mock_log):
+    def test_parameter_processors(self, mock_log):
+        self._update_xblock_for_signed_parameters()
         self.xblock.enable_processors = True
-        with patch('lti_consumer.lti_consumer.LtiConsumerXBlock.get_settings', return_value=settings):
-            with self.assertRaises(Exception):
-                list(self.xblock.get_parameter_processors())
+
+        mock_value = {
+            'parameter_processors': ['lti_consumer.tests.unit.test_utils:dummy_processor']
+        }
+        with patch('lti_consumer.lti_consumer_xblock.LtiConsumerXBlock.get_settings', return_value=mock_value):
+            params = self.lti_consumer.get_signed_lti_parameters()
+            assert params['custom_author_country'] == u''
+            assert params['custom_author_email'] == u'author@example.com'
+            assert not mock_log.exception.called
+
+    @patch_signed_parameters
+    @patch('lti_consumer.lti_consumer.log')
+    def test_default_params(self, mock_log):
+        self._update_xblock_for_signed_parameters()
+        self.xblock.enable_processors = True
+
+        mock_value = {
+            'parameter_processors': ['lti_consumer.tests.unit.test_utils:defaulting_processor']
+        }
+        with patch('lti_consumer.lti_consumer_xblock.LtiConsumerXBlock.get_settings', return_value=mock_value):
+            params = self.lti_consumer.get_signed_lti_parameters()
+            assert params['custom_country'] == u''
+            assert params['custom_name'] == u'Lex'
+            assert not mock_log.exception.called
+
+    @patch_signed_parameters
+    @patch('lti_consumer.lti_consumer.log')
+    def test_default_params_with_error(self, mock_log):
+        self._update_xblock_for_signed_parameters()
+        self.xblock.enable_processors = True
+
+        mock_value = {
+            'parameter_processors': ['lti_consumer.tests.unit.test_utils:faulty_processor']
+        }
+        with patch('lti_consumer.lti_consumer_xblock.LtiConsumerXBlock.get_settings', return_value=mock_value):
+            params = self.lti_consumer.get_signed_lti_parameters()
+            assert params['custom_name'] == u'Lex'
             assert mock_log.exception.called
 
-
-class TestGetModalPositionOffset(TestLtiConsumerXBlock):
-    """
-    Unit tests for LtiConsumerXBlock._get_modal_position_offset()
-    """
-
-    def test_offset_calculation(self):
+    def test_get_result(self):
         """
-        Test `_get_modal_position_offset` returns the correct value
+        Test `get_result` returns valid json response
         """
-        offset = self.xblock._get_modal_position_offset(self.xblock.modal_height)  # pylint: disable=protected-access
+        self.xblock.module_score = 0.9
+        self.xblock.score_comment = 'Great Job!'
+        response = dict(GET_RESULT_RESPONSE)
+        response.update({
+            "resultScore": self.xblock.module_score,
+            "comment": self.xblock.score_comment
+        })
+        self.assertEqual(self.lti_consumer.get_result(Mock()), response)
 
-        # modal_height defaults to 80, so offset should equal 10
-        self.assertEqual(offset, 10)
+        self.xblock.module_score = None
+        self.xblock.score_comment = ''
+        self.assertEqual(self.lti_consumer.get_result(Mock()), GET_RESULT_RESPONSE)
+
+    @patch('lti_consumer.lti_consumer_xblock.LtiConsumerXBlock.clear_user_module_score')
+    def test_delete_result(self, mock_clear):
+        """
+        Test `delete_result` calls `LtiConsumerXBlock.clear_user_module_score`
+        """
+        user = Mock()
+        response = self.lti_consumer.delete_result(user)
+
+        mock_clear.assert_called_with(user)
+        self.assertEqual(response, {})
+
+    @patch('lti_consumer.lti_consumer_xblock.LtiConsumerXBlock.max_score', Mock(return_value=1.0))
+    @patch('lti_consumer.lti_consumer_xblock.LtiConsumerXBlock.set_user_module_score')
+    @patch('lti_consumer.lti_consumer_xblock.LtiConsumerXBlock.clear_user_module_score')
+    @patch('lti_consumer.lti_consumer.parse_result_json')
+    def test_put_result(self, mock_parse, mock_clear, mock_set):
+        """
+        Test `put_result` calls `LtiConsumerXBlock.set_user_module_score`
+        or `LtiConsumerXblock.clear_user_module_score` if resultScore not included in request
+        """
+        user = Mock()
+        score = 0.9
+        comment = 'Great Job!'
+
+        mock_parse.return_value = (score, comment)
+        response = self.lti_consumer.put_result(user, '')
+        mock_set.assert_called_with(user, score, 1.0, comment)
+        self.assertEqual(response, {})
+
+        mock_parse.return_value = (None, '')
+        response = self.lti_consumer.put_result(user, '')
+        mock_clear.assert_called_with(user)
+        self.assertEqual(response, {})
+
+    @patch('lti_consumer.lti_consumer.log')
+    def test_verify_result_headers_verify_content_type_true(self, mock_log):
+        """
+        Test wrong content type raises exception if `verify_content_type` is True
+        """
+        request = make_request('')
+
+        with self.assertRaises(LtiError):
+            self.lti_consumer.verify_result_headers(request)
+
+        assert mock_log.error.called
+
+    @patch('lti_consumer.lti_consumer.verify_oauth_body_signature', Mock(return_value=True))
+    @patch('lti_consumer.lti_consumer_xblock.LtiConsumerXBlock.lti_provider_key_secret', PropertyMock(return_value=('t', 's')))
+    def test_verify_result_headers_verify_content_type_false(self):
+        """
+        Test content type check skipped if `verify_content_type` is False
+        """
+        request = make_request('')
+        request.environ['CONTENT_TYPE'] = LtiConsumer.CONTENT_TYPE_RESULT_JSON
+        response = self.lti_consumer.verify_result_headers(request, False)
+
+        self.assertTrue(response)
+
+    @patch('lti_consumer.lti_consumer.verify_oauth_body_signature', Mock(return_value=True))
+    @patch('lti_consumer.lti_consumer_xblock.LtiConsumerXBlock.lti_provider_key_secret', PropertyMock(return_value=('t', 's')))
+    def test_verify_result_headers_valid(self):
+        """
+        Test True is returned if request is valid
+        """
+        request = make_request('')
+        request.environ['CONTENT_TYPE'] = LtiConsumer.CONTENT_TYPE_RESULT_JSON
+        response = self.lti_consumer.verify_result_headers(request)
+
+        self.assertTrue(response)
+
+    @patch('lti_consumer.lti_consumer.verify_oauth_body_signature', Mock(side_effect=LtiError))
+    @patch('lti_consumer.lti_consumer_xblock.LtiConsumerXBlock.lti_provider_key_secret', PropertyMock(return_value=('t', 's')))
+    @patch('lti_consumer.lti_consumer.log')
+    def test_verify_result_headers_lti_error(self, mock_log):
+        """
+        Test exception raised if request header verification raises error
+        """
+        request = make_request('')
+        request.environ['CONTENT_TYPE'] = LtiConsumer.CONTENT_TYPE_RESULT_JSON
+
+        with self.assertRaises(LtiError):
+            self.lti_consumer.verify_result_headers(request)
+
+        assert mock_log.error.called
+
+    @patch('lti_consumer.lti_consumer.verify_oauth_body_signature', Mock(side_effect=ValueError))
+    @patch('lti_consumer.lti_consumer_xblock.LtiConsumerXBlock.lti_provider_key_secret', PropertyMock(return_value=('t', 's')))
+    @patch('lti_consumer.lti_consumer.log')
+    def test_verify_result_headers_value_error(self, mock_log):
+        """
+        Test exception raised if request header verification raises error
+        """
+        request = make_request('')
+        request.environ['CONTENT_TYPE'] = LtiConsumer.CONTENT_TYPE_RESULT_JSON
+
+        with self.assertRaises(LtiError):
+            self.lti_consumer.verify_result_headers(request)
+
+        assert mock_log.error.called
