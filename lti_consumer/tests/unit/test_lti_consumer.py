@@ -10,7 +10,7 @@ import ddt
 import six
 from django.test.testcases import TestCase
 from django.utils import timezone
-from mock import Mock, PropertyMock, patch
+from mock import Mock, PropertyMock, NonCallableMock, patch
 
 from lti_consumer.exceptions import LtiError
 from lti_consumer.lti_consumer import LtiConsumerXBlock, parse_handler_suffix
@@ -358,6 +358,74 @@ class TestEditableFields(TestLtiConsumerXBlock):
         self.assertFalse(self.are_fields_editable(fields=['ask_to_send_username', 'ask_to_send_email']))
 
 
+class TestGetLti1p1Consumer(TestLtiConsumerXBlock):
+    """
+    Unit tests for LtiConsumerXBlock._get_lti1p1_consumer()
+    """
+
+    @patch('lti_consumer.lti_consumer.LtiConsumer1p1')
+    def test_lti_1p1_consumer_created(self, mock_lti_consumer):
+        """
+        Test LtiConsumer.generate_launch_request is called and a 200 HTML response is returned
+        """
+        response = self.xblock._get_lti1p1_consumer()
+
+        mock_lti_consumer.assert_called_with(self.xblock.launch_url)
+
+
+class TestExtractRealUserData(TestLtiConsumerXBlock):
+    """
+    Unit tests for LtiConsumerXBlock._get_lti1p1_consumer()
+    """
+
+    def test_get_real_user_not_callable(self):
+        """
+        Test user_email, user_username, and user_language not available
+        """
+        self.xblock.runtime.get_real_user = NonCallableMock()
+
+        self.xblock.extract_real_user_data()
+        with self.assertRaises(AttributeError):
+            self.xblock.user_email
+        with self.assertRaises(AttributeError):
+            self.xblock.user_username
+        with self.assertRaises(AttributeError):
+            self.xblock.user_language
+
+    def test_get_real_user_callable(self):
+        """
+        Test user_email, and user_username available, but not user_language
+        """
+        fake_user = Mock()
+        fake_user.email = 'abc@example.com'
+        fake_user.username = 'fake'
+        fake_user.preferences = None
+
+        self.xblock.runtime.get_real_user = Mock(return_value=fake_user)
+
+        self.xblock.extract_real_user_data()
+        self.assertEqual(self.xblock.user_email, fake_user.email)
+        self.assertEqual(self.xblock.user_username, fake_user.username)
+        with self.assertRaises(AttributeError):
+            self.xblock.user_language
+
+    def test_get_real_user_callable_with_language_preference(self):
+        """
+        Test user_language available
+        """
+        fake_user = Mock()
+        fake_user.email = 'abc@example.com'
+        fake_user.username = 'fake'
+        mock_language_pref = Mock()
+        mock_language_pref.value = PropertyMock(return_value='en')
+        fake_user.preferences.filter = Mock(return_value=[mock_language_pref])
+
+        self.xblock.runtime.get_real_user = Mock(return_value=fake_user)
+
+        self.xblock.extract_real_user_data()
+        self.assertEqual(self.xblock.user_language, mock_language_pref.value)
+
+
 class TestStudentView(TestLtiConsumerXBlock):
     """
     Unit tests for LtiConsumerXBlock.student_view()
@@ -439,15 +507,25 @@ class TestLtiLaunchHandler(TestLtiConsumerXBlock):
     Unit tests for LtiConsumerXBlock.lti_launch_handler()
     """
 
-    @patch('lti_consumer.lti.LtiConsumer.get_signed_lti_parameters')
-    def test_handle_request_called(self, mock_get_signed_lti_parameters):
+    def setUp(self):
+        super(TestLtiLaunchHandler, self).setUp()        
+        self.xblock.runtime.get_real_user = Mock(return_value=None)
+
+    @patch('lti_consumer.lti_consumer.LtiConsumer1p1')
+    @patch('lti_consumer.lti_consumer.LtiConsumerXBlock.course')
+    def test_generate_launch_request_called(self, mock_course, mock_lti_consumer):
         """
-        Test LtiConsumer.get_signed_lti_parameters is called and a 200 HTML response is returned
+        Test LtiConsumer.generate_launch_request is called and a 200 HTML response is returned
         """
+        provider = 'lti_provider'
+        key = 'test'
+        secret = 'secret'
+        type(mock_course).lti_passports = PropertyMock(return_value=["{}:{}:{}".format(provider, key, secret)])
+
         request = make_request('', 'GET')
         response = self.xblock.lti_launch_handler(request)
 
-        assert mock_get_signed_lti_parameters.called
+        mock_lti_consumer.generate_launch_request.assert_called_with(self.xblock.resource_link_id)
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.content_type, 'text/html')
 
@@ -518,8 +596,8 @@ class TestResultServiceHandler(TestLtiConsumerXBlock):
 
         self.assertEqual(response.status_code, 404)
 
-    @patch('lti_consumer.lti.LtiConsumer.get_result')
-    @patch('lti_consumer.lti.LtiConsumer.verify_result_headers', Mock(return_value=True))
+    @patch('lti_consumer.lti_1p1.consumer.LtiConsumer1p1.get_result')
+    @patch('lti_consumer.lti_1p1.consumer.LtiConsumer1p1.verify_result_headers', Mock(return_value=True))
     @patch('lti_consumer.lti_consumer.parse_handler_suffix')
     @patch('lti_consumer.lti_consumer.LtiConsumerXBlock.is_past_due')
     def test_accept_grades_past_due_true_and_is_past_due_true(self, mock_is_past_due, mock_parse_suffix,
@@ -544,7 +622,7 @@ class TestResultServiceHandler(TestLtiConsumerXBlock):
 
         self.assertEqual(response.status_code, 404)
 
-    @patch('lti_consumer.lti.LtiConsumer.verify_result_headers')
+    @patch('lti_consumer.lti_1p1.consumer.LtiConsumer1p1.verify_result_headers')
     @patch('lti_consumer.lti_consumer.parse_handler_suffix')
     def test_verify_headers_raises_error(self, mock_parse_suffix, mock_verify_result_headers):
         """
@@ -556,7 +634,7 @@ class TestResultServiceHandler(TestLtiConsumerXBlock):
 
         self.assertEqual(response.status_code, 401)
 
-    @patch('lti_consumer.lti.LtiConsumer.verify_result_headers', Mock(return_value=True))
+    @patch('lti_consumer.lti_1p1.consumer.LtiConsumer1p1.verify_result_headers', Mock(return_value=True))
     @patch('lti_consumer.lti_consumer.parse_handler_suffix')
     def test_bad_user_id(self, mock_parse_suffix):
         """
@@ -568,7 +646,7 @@ class TestResultServiceHandler(TestLtiConsumerXBlock):
 
         self.assertEqual(response.status_code, 404)
 
-    @patch('lti_consumer.lti.LtiConsumer.verify_result_headers', Mock(return_value=True))
+    @patch('lti_consumer.lti_1p1.consumer.LtiConsumer1p1.verify_result_headers', Mock(return_value=True))
     @patch('lti_consumer.lti_consumer.parse_handler_suffix')
     def test_bad_request_method(self, mock_parse_suffix):
         """
@@ -579,60 +657,138 @@ class TestResultServiceHandler(TestLtiConsumerXBlock):
 
         self.assertEqual(response.status_code, 404)
 
-    @patch('lti_consumer.lti.LtiConsumer.get_result')
-    @patch('lti_consumer.lti.LtiConsumer.verify_result_headers', Mock(return_value=True))
+    @patch('lti_consumer.lti_consumer.LtiConsumerXBlock._result_service_get')
+    @patch('lti_consumer.lti_1p1.consumer.LtiConsumer1p1.verify_result_headers', Mock(return_value=True))
     @patch('lti_consumer.lti_consumer.parse_handler_suffix')
-    def test_get_result_raises_error(self, mock_parse_suffix, mock_get_result):
+    def test_get_result_raises_error(self, mock_parse_suffix, mock_result_service_get):
         """
-        Test 404 response returned when the LtiConsumer result service handler methods raise an exception
+        Test 404 response returned when the LtiConsumerXBlock._result_service_* methods raise an exception
         """
         mock_parse_suffix.return_value = FAKE_USER_ID
-        mock_get_result.side_effect = LtiError()
+        mock_result_service_get.side_effect = LtiError()
         response = self.xblock.result_service_handler(make_request('', 'GET'))
 
         self.assertEqual(response.status_code, 404)
 
-    @patch('lti_consumer.lti.LtiConsumer.get_result')
-    @patch('lti_consumer.lti.LtiConsumer.verify_result_headers', Mock(return_value=True))
+    @patch('lti_consumer.lti_consumer.LtiConsumerXBlock._result_service_get')
+    @patch('lti_consumer.lti_1p1.consumer.LtiConsumer1p1.verify_result_headers', Mock(return_value=True))
     @patch('lti_consumer.lti_consumer.parse_handler_suffix')
-    def test_get_result_called(self, mock_parse_suffix, mock_get_result):
+    def test_result_service_get_called(self, mock_parse_suffix, mock_result_service_get):
         """
-        Test 200 response and LtiConsumer.get_result is called on a GET request
+        Test 200 response and LtiConsumerXBlock._result_service_get is called on a GET request
         """
         mock_parse_suffix.return_value = FAKE_USER_ID
-        mock_get_result.return_value = {}
+        mock_result_service_get.return_value = {}
         response = self.xblock.result_service_handler(make_request('', 'GET'))
 
-        assert mock_get_result.called
+        assert mock_result_service_get.called
         self.assertEqual(response.status_code, 200)
 
-    @patch('lti_consumer.lti.LtiConsumer.put_result')
-    @patch('lti_consumer.lti.LtiConsumer.verify_result_headers', Mock(return_value=True))
+    @patch('lti_consumer.lti_consumer.LtiConsumerXBlock._result_service_put')
+    @patch('lti_consumer.lti_1p1.consumer.LtiConsumer1p1.verify_result_headers', Mock(return_value=True))
     @patch('lti_consumer.lti_consumer.parse_handler_suffix')
-    def test_put_result_called(self, mock_parse_suffix, mock_put_result):
+    def test_result_service_put_called(self, mock_parse_suffix, mock_result_service_put):
         """
-        Test 200 response and LtiConsumer.put_result is called on a PUT request
+        Test 200 response and LtiConsumerXBlock._result_service_put is called on a PUT request
         """
         mock_parse_suffix.return_value = FAKE_USER_ID
-        mock_put_result.return_value = {}
+        mock_result_service_put.return_value = {}
         response = self.xblock.result_service_handler(make_request('', 'PUT'))
 
-        assert mock_put_result.called
+        assert mock_result_service_put.called
         self.assertEqual(response.status_code, 200)
 
-    @patch('lti_consumer.lti.LtiConsumer.delete_result')
-    @patch('lti_consumer.lti.LtiConsumer.verify_result_headers', Mock(return_value=True))
+    @patch('lti_consumer.lti_consumer.LtiConsumerXBlock._result_service_delete')
+    @patch('lti_consumer.lti_1p1.consumer.LtiConsumer1p1.verify_result_headers', Mock(return_value=True))
     @patch('lti_consumer.lti_consumer.parse_handler_suffix')
-    def test_delete_result_called(self, mock_parse_suffix, mock_delete_result):
+    def test_result_service_delete_called(self, mock_parse_suffix, mock_result_service_delete):
         """
-        Test 200 response and LtiConsumer.delete_result is called on a DELETE request
+        Test 200 response and LtiConsumerXBlock._result_service_delete is called on a DELETE request
         """
         mock_parse_suffix.return_value = FAKE_USER_ID
-        mock_delete_result.return_value = {}
+        mock_result_service_delete.return_value = {}
         response = self.xblock.result_service_handler(make_request('', 'DELETE'))
 
-        assert mock_delete_result.called
+        assert mock_result_service_delete.called
         self.assertEqual(response.status_code, 200)
+
+    def test_consumer_get_result_called(self):
+        """
+        Test runtime calls rebind_noauth_module_to_user and LtiConsumer.get_result is called on a GET request
+        """
+        mock_runtime = self.xblock.runtime = Mock()
+        mock_lti_consumer = Mock()
+        mock_user = Mock()
+
+        response = self.xblock._result_service_get(mock_lti_consumer, mock_user)
+
+        mock_runtime.rebind_noauth_module_to_user.assert_called_with(self.xblock, mock_user)
+        mock_lti_consumer.get_result.assert_called_with()
+
+    @patch('lti_consumer.lti_consumer.LtiConsumerXBlock.module_score', PropertyMock(return_value=0.5))
+    @patch('lti_consumer.lti_consumer.LtiConsumerXBlock.score_comment', PropertyMock(return_value='test'))
+    def test_consumer_get_result_called_with_score_details(self):
+        """
+        Test LtiConsumer.get_result is called with module_score and score_comment on a GET request with a module_score
+        """
+        mock_lti_consumer = Mock()
+        mock_user = Mock()
+
+        response = self.xblock._result_service_get(mock_lti_consumer, mock_user)
+
+        mock_lti_consumer.get_result.assert_called_with(0.5, 'test')
+
+    @patch('lti_consumer.lti_consumer.LtiConsumerXBlock.clear_user_module_score', Mock(return_value=True))
+    @patch('lti_consumer.lti_consumer.parse_result_json')
+    def test_consumer_put_result_called(self, mock_parse_result_json):
+        """
+        Test parse_result_json and LtiConsumer.put_result is called on a PUT request
+        """
+        mock_parse_result_json.return_value = (None, None)
+        mock_lti_consumer = Mock()
+        mock_user = Mock()
+
+        response = self.xblock._result_service_put(mock_lti_consumer, mock_user, '')
+
+        assert mock_parse_result_json.called
+        assert mock_lti_consumer.put_result.called
+
+    @patch('lti_consumer.lti_consumer.LtiConsumerXBlock.clear_user_module_score')
+    @patch('lti_consumer.lti_consumer.parse_result_json', Mock(return_value=(None, None)))
+    def test_clear_user_module_score_called_when_no_score_available(self, mock_clear_user_module_score):
+        """
+        Test LtiConsumerXBlock.clear_user_module_score is called on a PUT request with no score
+        """
+        mock_lti_consumer = Mock()
+        mock_user = Mock()
+        response = self.xblock._result_service_put(mock_lti_consumer, mock_user, '')
+
+        mock_clear_user_module_score.assert_called_with(mock_user)
+
+    @patch('lti_consumer.lti_consumer.LtiConsumerXBlock.set_user_module_score')
+    @patch('lti_consumer.lti_consumer.LtiConsumerXBlock.max_score', Mock(return_value=10))
+    @patch('lti_consumer.lti_consumer.parse_result_json', Mock(return_value=(1, 'comment')))
+    def test_set_user_module_score_called_when_score_available(self, mock_set_user_module_score):
+        """
+        Test LtiConsumerXBlock.set_user_module_score is called on a PUT request with a score
+        """
+        mock_lti_consumer = Mock()
+        mock_user = Mock()
+        response = self.xblock._result_service_put(mock_lti_consumer, mock_user, '')
+
+        mock_set_user_module_score.assert_called_with(mock_user, 1, 10, 'comment')
+
+    @patch('lti_consumer.lti_consumer.LtiConsumerXBlock.clear_user_module_score')
+    def test_consumer_delete_result_called(self, mock_clear_user_module_score):
+        """
+        Test LtiConsumerXBlock.clear_user_module_score is called on a PUT request with no score
+        """
+        mock_lti_consumer = Mock()
+        mock_user = Mock()
+        response = self.xblock._result_service_delete(mock_lti_consumer, mock_user)
+
+        mock_clear_user_module_score.assert_called_with(mock_user)
+        assert mock_lti_consumer.delete_result.called
 
     def test_get_outcome_service_url_with_default_parameter(self):
         """

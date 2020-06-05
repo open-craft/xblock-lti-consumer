@@ -71,8 +71,7 @@ from xblockutils.resources import ResourceLoader
 from xblockutils.studio_editable import StudioEditableXBlockMixin
 
 from .exceptions import LtiError
-from .lti import LtiConsumer
-from .lti_1p1.consumer import LTI_PARAMETERS
+from .lti_1p1.consumer import LtiConsumer1p1, parse_result_json, LTI_PARAMETERS
 from .oauth import log_authorization_header
 from .outcomes import OutcomeService
 from .utils import _
@@ -673,6 +672,14 @@ class LtiConsumerXBlock(StudioEditableXBlockMixin, XBlock):
                     param_name = 'custom_' + param_name
 
                 custom_parameters[six.text_type(param_name)] = six.text_type(param_value)
+
+        custom_parameters[six.text_type('custom_component_display_name')] = six.text_type(self.display_name)
+
+        if self.due:
+            custom_parameters[six.text_type('custom_component_due_date')] = six.text_type(self.due.strftime('%Y-%m-%d %H:%M:%S'))
+            if self.graceperiod:
+                custom_parameters[six.text_type('custom_component_graceperiod')] = six.text_type(str(self.graceperiod.total_seconds()))
+
         return custom_parameters
 
     @property
@@ -686,6 +693,27 @@ class LtiConsumerXBlock(StudioEditableXBlockMixin, XBlock):
         else:
             close_date = due_date
         return close_date is not None and timezone.now() > close_date
+
+    def _get_lti1p1_consumer(self):
+        """
+        Returns a preconfigured LTI 1.1 consumer.
+        If the block is configured to use LTI 1.1, set up a
+        base LTI 1.1 consumer class.
+        This class does NOT store state between calls.
+        """
+        return LtiConsumer1p1(self.launch_url)
+
+    def extract_real_user_data(self):
+        if callable(self.runtime.get_real_user):
+            real_user_object = self.runtime.get_real_user(self.runtime.anonymous_student_id)
+            self.user_email = getattr(real_user_object, "email", "")
+            self.user_username = getattr(real_user_object, "username", "")
+            user_preferences = getattr(real_user_object, "preferences", None)
+
+            if user_preferences is not None:
+                language_preference = user_preferences.filter(key='pref-lang')
+                if len(language_preference) == 1:
+                    self.user_language = language_preference[0].value
 
     def student_view(self, context):
         """
@@ -726,8 +754,42 @@ class LtiConsumerXBlock(StudioEditableXBlockMixin, XBlock):
         Returns:
             webob.response: HTML LTI launch form
         """
-        lti_consumer = LtiConsumer(self)
-        lti_parameters = lti_consumer.get_signed_lti_parameters()
+        self.extract_real_user_data()
+
+        lti_consumer = self._get_lti1p1_consumer()
+
+        key, secret = self.lti_provider_key_secret
+        lti_consumer.set_oauth_data(key, secret)
+
+        username = None
+        email = None
+        if self.ask_to_send_username and hasattr(self, 'user_username'):
+            username = self.user_username
+        if self.ask_to_send_email and hasattr(self, 'user_email'):
+            email = self.user_email
+
+        lti_consumer.set_user_data(
+            self.user_id,
+            self.role,
+            self.lis_result_sourcedid,
+            username,
+            email
+        )
+        lti_consumer.set_context_data(
+            self.context_id,
+            self.course.display_name_with_default,
+            self.course.display_org_with_default
+        )
+
+        if self.has_score:
+            lti_consumer.set_outcome_service_url(self.outcome_service_url)
+
+        if hasattr(self, 'user_language'):
+            lti_consumer.set_language_preference_data(self.user_language)
+
+        lti_consumer.set_custom_parameters(self.prefixed_custom_parameters)
+
+        lti_parameters = lti_consumer.generate_launch_request(self.resource_link_id)
         loader = ResourceLoader(__name__)
         context = self._get_context_for_template()
         context.update({'lti_parameters': lti_parameters})
@@ -784,7 +846,8 @@ class LtiConsumerXBlock(StudioEditableXBlockMixin, XBlock):
         Returns:
             webob.response:  response to this request.  See above for details.
         """
-        lti_consumer = LtiConsumer(self)
+        lti_consumer = self._get_lti1p1_consumer()
+        lti_consumer.set_outcome_service_url(self.outcome_service_url)
 
         if self.runtime.debug:
             lti_provider_key, lti_provider_secret = self.lti_provider_key_secret
@@ -809,20 +872,45 @@ class LtiConsumerXBlock(StudioEditableXBlockMixin, XBlock):
             return Response(status=404)  # have to do 404 due to spec, but 400 is better, with error msg in body
 
         try:
-            # Call the appropriate LtiConsumer method
-            args = []
+            # Call the appropriate LtiConsumer1p1 method
+            args = [lti_consumer, user]
             if request.method == 'PUT':
                 # Request body should be passed as an argument
                 # to result handler method on PUT
                 args.append(request.body)
-            response_body = getattr(lti_consumer, "{}_result".format(request.method.lower()))(user, *args)
+            response_body = getattr(
+                self,
+                "_result_service_{}".format(request.method.lower())
+            )(*args)
         except (AttributeError, LtiError):
             return Response(status=404)
 
         return Response(
             json_body=response_body,
-            content_type=LtiConsumer.CONTENT_TYPE_RESULT_JSON,
+            content_type=LtiConsumer1p1.CONTENT_TYPE_RESULT_JSON,
         )
+
+    def _result_service_get(self, lti_consumer, user):
+        self.runtime.rebind_noauth_module_to_user(self, user)
+        args = []
+        if self.module_score:
+            args.extend([self.module_score, self.score_comment])
+        return lti_consumer.get_result(*args)
+
+    def _result_service_delete(self, lti_consumer, user):
+        self.clear_user_module_score(user)
+        return lti_consumer.delete_result()
+
+    def _result_service_put(self, lti_consumer, user, result_json):
+        score, comment = parse_result_json(result_json)
+
+        if score is None:
+            # According to http://www.imsglobal.org/lti/ltiv2p0/ltiIMGv2p0.html#_Toc361225514
+            # PUTting a JSON object with no "resultScore" field is equivalent to a DELETE.
+            self.clear_user_module_score(user)
+        else:
+            self.set_user_module_score(user, score, self.max_score(), comment)
+        return lti_consumer.put_result()
 
     def max_score(self):
         """
