@@ -13,8 +13,8 @@ import six.moves.urllib.error
 import six.moves.urllib.parse
 from six import text_type
 
-from .exceptions import LtiError
-from .oauth import get_oauth_request_signature, verify_oauth_body_signature
+from ..exceptions import LtiError
+from ..oauth import get_oauth_request_signature, verify_oauth_body_signature
 
 log = logging.getLogger(__name__)
 
@@ -49,7 +49,7 @@ LTI_PARAMETERS = [
 ]
 
 
-class LtiConsumerBase(object):  # pylint: disable=bad-option-value, useless-object-inheritance
+class LtiConsumer1p1(object):  # pylint: disable=bad-option-value, useless-object-inheritance
     """
     Limited implementation of the LTI 1.1/2.0 specification.
 
