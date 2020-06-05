@@ -19,106 +19,10 @@ from lti_consumer.tests.unit.test_lti_consumer import TestLtiConsumerXBlock
 from lti_consumer.tests.unit.test_utils import (make_request,
                                                 patch_signed_parameters)
 
-INVALID_JSON_INPUTS = [
-    ([
-        u"kk",   # ValueError
-        u"{{}",  # ValueError
-        u"{}}",  # ValueError
-        3,       # TypeError
-        {},      # TypeError
-    ], u"Supplied JSON string in request body could not be decoded"),
-    ([
-        u"3",        # valid json, not array or object
-        u"[]",       # valid json, array too small
-        u"[3, {}]",  # valid json, 1st element not an object
-    ], u"Supplied JSON string is a list that does not contain an object as the first element"),
-    ([
-        u'{"@type": "NOTResult"}',  # @type key must have value 'Result'
-    ], u"JSON object does not contain correct @type attribute"),
-    ([
-        # @context missing
-        u'{"@type": "Result", "resultScore": 0.1}',
-    ], u"JSON object does not contain required key"),
-    ([
-        u'''
-        {"@type": "Result",
-         "@context": "http://purl.imsglobal.org/ctx/lis/v2/Result",
-         "resultScore": 100}'''  # score out of range
-    ], u"score value outside the permitted range of 0.0-1.0."),
-    ([
-        u'''
-        {"@type": "Result",
-         "@context": "http://purl.imsglobal.org/ctx/lis/v2/Result",
-         "resultScore": -2}'''  # score out of range
-    ], u"score value outside the permitted range of 0.0-1.0."),
-    ([
-        u'''
-        {"@type": "Result",
-         "@context": "http://purl.imsglobal.org/ctx/lis/v2/Result",
-         "resultScore": "1b"}''',   # score ValueError
-        u'''
-        {"@type": "Result",
-         "@context": "http://purl.imsglobal.org/ctx/lis/v2/Result",
-         "resultScore": {}}''',   # score TypeError
-    ], u"Could not convert resultScore to float"),
-]
-
-VALID_JSON_INPUTS = [
-    (u'''
-    {"@type": "Result",
-     "@context": "http://purl.imsglobal.org/ctx/lis/v2/Result",
-     "resultScore": 0.1}''', 0.1, u""),  # no comment means we expect ""
-    (u'''
-    [{"@type": "Result",
-     "@context": "http://purl.imsglobal.org/ctx/lis/v2/Result",
-     "@id": "anon_id:abcdef0123456789",
-     "resultScore": 0.1}]''', 0.1, u""),  # OK to have array of objects -- just take the first.  @id is okay too
-    (u'''
-    {"@type": "Result",
-     "@context": "http://purl.imsglobal.org/ctx/lis/v2/Result",
-     "resultScore": 0.1,
-     "comment": "ಠ益ಠ"}''', 0.1, u"ಠ益ಠ"),  # unicode comment
-    (u'''
-    {"@type": "Result",
-     "@context": "http://purl.imsglobal.org/ctx/lis/v2/Result"}''', None, u""),  # no score means we expect None
-    (u'''
-    {"@type": "Result",
-     "@context": "http://purl.imsglobal.org/ctx/lis/v2/Result",
-     "resultScore": 0.0}''', 0.0, u""),  # test lower score boundary
-    (u'''
-    {"@type": "Result",
-     "@context": "http://purl.imsglobal.org/ctx/lis/v2/Result",
-     "resultScore": 1.0}''', 1.0, u""),  # test upper score boundary
-]
-
 GET_RESULT_RESPONSE = {
     "@context": "http://purl.imsglobal.org/ctx/lis/v2/Result",
     "@type": "Result",
 }
-
-
-class TestParseResultJson(unittest.TestCase):
-    """
-    Unit tests for `lti_consumer.lti.parse_result_json`
-    """
-
-    def test_invalid_json(self):
-        """
-        Test invalid json raises exception
-        """
-        for error_inputs, error_message in INVALID_JSON_INPUTS:
-            for error_input in error_inputs:
-                with six.assertRaisesRegex(self, LtiError, error_message):
-                    parse_result_json(error_input)
-
-    def test_valid_json(self):
-        """
-        Test valid json returns expected values
-        """
-        for json_str, expected_score, expected_comment in VALID_JSON_INPUTS:
-            score, comment = parse_result_json(json_str)
-            self.assertEqual(score, expected_score)
-            self.assertEqual(comment, expected_comment)
 
 
 class TestLtiConsumer(TestLtiConsumerXBlock):

@@ -7,7 +7,6 @@ https://www.imsglobal.org/activity/learning-tools-interoperability
 
 from __future__ import absolute_import, unicode_literals
 
-import json
 import logging
 
 import six.moves.urllib.error
@@ -15,81 +14,10 @@ import six.moves.urllib.parse
 from six import text_type
 
 from .exceptions import LtiError
+from .lti_1p1.consumer import parse_result_json
 from .oauth import get_oauth_request_signature, verify_oauth_body_signature
 
 log = logging.getLogger(__name__)
-
-
-def parse_result_json(json_str):
-    """
-    Helper method for verifying LTI 2.0 JSON object contained in the body of the request.
-
-    The json_str must be loadable.  It can either be an dict (object) or an array whose first element is an dict,
-    in which case that first dict is considered.
-    The dict must have the "@type" key with value equal to "Result",
-    "resultScore" key with value equal to a number [0, 1], if "resultScore" is not
-    included in the JSON body, score will be returned as None
-    The "@context" key must be present, but we don't do anything with it.  And the "comment" key may be
-    present, in which case it must be a string.
-
-    Arguments:
-        json_str (unicode):  The body of the LTI 2.0 results service request, which is a JSON string
-
-    Returns:
-        (float, str):  (score, [optional]comment) if parsing is successful
-
-    Raises:
-        LtiError: if verification fails
-    """
-    try:
-        json_obj = json.loads(json_str)
-    except (ValueError, TypeError):
-        msg = "Supplied JSON string in request body could not be decoded: {}".format(json_str)
-        log.error("[LTI] %s", msg)
-        raise LtiError(msg)
-
-    # The JSON object must be a dict. If a non-empty list is passed in,
-    # use the first element, but only if it is a dict
-    if isinstance(json_obj, list) and len(json_obj) >= 1:
-        json_obj = json_obj[0]
-
-    if not isinstance(json_obj, dict):
-        msg = ("Supplied JSON string is a list that does not contain an object as the first element. {}"
-               .format(json_str))
-        log.error("[LTI] %s", msg)
-        raise LtiError(msg)
-
-    # '@type' must be "Result"
-    result_type = json_obj.get("@type")
-    if result_type != "Result":
-        msg = "JSON object does not contain correct @type attribute (should be 'Result', is z{})".format(result_type)
-        log.error("[LTI] %s", msg)
-        raise LtiError(msg)
-
-    # '@context' must be present as a key
-    if '@context' not in json_obj:
-        msg = "JSON object does not contain required key @context"
-        log.error("[LTI] %s", msg)
-        raise LtiError(msg)
-
-    # Return None if the resultScore key is missing, this condition
-    # will be handled by the upstream caller of this function
-    if "resultScore" not in json_obj:
-        score = None
-    else:
-        # if present, 'resultScore' must be a number between 0 and 1 inclusive
-        try:
-            score = float(json_obj.get('resultScore', "unconvertable"))  # Check if float is present and the right type
-            if not 0.0 <= score <= 1.0:
-                msg = 'score value outside the permitted range of 0.0-1.0.'
-                log.error("[LTI] %s", msg)
-                raise LtiError(msg)
-        except (TypeError, ValueError) as err:
-            msg = "Could not convert resultScore to float: {}".format(str(err))
-            log.error("[LTI] %s", msg)
-            raise LtiError(msg)
-
-    return score, json_obj.get('comment', "")
 
 
 class LtiConsumer(object):  # pylint: disable=bad-option-value, useless-object-inheritance
