@@ -675,10 +675,10 @@ class LtiConsumerXBlock(StudioEditableXBlockMixin, XBlock):
 
         custom_parameters[six.text_type('custom_component_display_name')] = six.text_type(self.display_name)
 
-        if self.due:
+        if hasattr(self, 'due') and self.due is not None:
             custom_parameters[six.text_type('custom_component_due_date')] = six.text_type(self.due.strftime('%Y-%m-%d %H:%M:%S'))
-            if self.graceperiod:
-                custom_parameters[six.text_type('custom_component_graceperiod')] = six.text_type(str(self.graceperiod.total_seconds()))
+            if hasattr(self, 'graceperiod') and self.graceperiod is not None:
+                custom_parameters[six.text_type('custom_component_graceperiod')] = six.text_type(self.graceperiod.total_seconds())
 
         return custom_parameters
 

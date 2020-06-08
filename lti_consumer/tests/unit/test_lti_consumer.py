@@ -239,9 +239,41 @@ class TestProperties(TestLtiConsumerXBlock):
         Test `prefixed_custom_parameters` appropriately prefixes the configured custom params
         """
         self.xblock.custom_parameters = ['param_1=true', 'param_2 = false', 'lti_version=1.1']
+
+        expected_params = {
+            u'custom_component_display_name': self.xblock.display_name,
+            u'custom_param_1': u'true',
+            u'custom_param_2': u'false',
+            u'lti_version': u'1.1'
+        }
+
         params = self.xblock.prefixed_custom_parameters
 
-        self.assertEqual(params, {u'custom_param_1': u'true', u'custom_param_2': u'false', u'lti_version': u'1.1'})
+        self.assertEqual(params, expected_params)
+
+    def test_prefixed_custom_parameters_with_due_date_and_graceperiod(self):
+        """
+        Test `prefixed_custom_parameters` appropriately prefixes the configured custom params
+        """
+        now = timezone.now()
+        one_day = timedelta(days=1)
+        self.xblock.due = now
+        self.xblock.graceperiod = one_day
+
+        self.xblock.custom_parameters = ['param_1=true', 'param_2 = false', 'lti_version=1.1']
+
+        expected_params = {
+            u'custom_component_display_name': self.xblock.display_name,
+            u'custom_component_due_date': six.text_type(now.strftime('%Y-%m-%d %H:%M:%S')),
+            u'custom_component_graceperiod': six.text_type(one_day.total_seconds()),
+            u'custom_param_1': u'true',
+            u'custom_param_2': u'false',
+            u'lti_version': u'1.1'
+        }
+
+        params = self.xblock.prefixed_custom_parameters
+
+        self.assertEqual(params, expected_params)
 
     def test_invalid_custom_parameter(self):
         """
@@ -375,7 +407,7 @@ class TestGetLti1p1Consumer(TestLtiConsumerXBlock):
 
 class TestExtractRealUserData(TestLtiConsumerXBlock):
     """
-    Unit tests for LtiConsumerXBlock._get_lti1p1_consumer()
+    Unit tests for LtiConsumerXBlock.extract_real_user_data()
     """
 
     def test_get_real_user_not_callable(self):
@@ -508,12 +540,14 @@ class TestLtiLaunchHandler(TestLtiConsumerXBlock):
     """
 
     def setUp(self):
-        super(TestLtiLaunchHandler, self).setUp()        
+        super(TestLtiLaunchHandler, self).setUp()
+        self.mock_lti_consumer = Mock(generate_launch_request=Mock(return_value={}))
+        self.xblock._get_lti1p1_consumer = Mock(return_value=self.mock_lti_consumer)
         self.xblock.runtime.get_real_user = Mock(return_value=None)
 
-    @patch('lti_consumer.lti_consumer.LtiConsumer1p1')
     @patch('lti_consumer.lti_consumer.LtiConsumerXBlock.course')
-    def test_generate_launch_request_called(self, mock_course, mock_lti_consumer):
+    @patch('lti_consumer.lti_consumer.LtiConsumerXBlock.user_id', PropertyMock(return_value=FAKE_USER_ID))
+    def test_generate_launch_request_called(self, mock_course):
         """
         Test LtiConsumer.generate_launch_request is called and a 200 HTML response is returned
         """
@@ -525,7 +559,7 @@ class TestLtiLaunchHandler(TestLtiConsumerXBlock):
         request = make_request('', 'GET')
         response = self.xblock.lti_launch_handler(request)
 
-        mock_lti_consumer.generate_launch_request.assert_called_with(self.xblock.resource_link_id)
+        self.mock_lti_consumer.generate_launch_request.assert_called_with(self.xblock.resource_link_id)
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.content_type, 'text/html')
 
