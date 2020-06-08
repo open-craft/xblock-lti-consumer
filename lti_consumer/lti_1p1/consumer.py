@@ -296,16 +296,14 @@ class LtiConsumer1p1(object):  # pylint: disable=bad-option-value, useless-objec
 
     def get_result(self, result_score=None, score_comment=None):  # pylint: disable=unused-argument
         """
-        Helper request handler for GET requests to LTI 2.0 result endpoint
-
-        GET handler for lti_2_0_result.  Assumes all authorization has been checked.
+        Returns response body for GET requests to LTI 2.0 result endpoint
 
         Arguments:
-            request (xblock.django.request.DjangoWebobRequest):  Request object (unused)
-            real_user (django.contrib.auth.models.User):  Actual user linked to anon_id in request path suffix
+            result_score (float):  The result score of the user
+            score_comment (string):  A text comment describing the score
 
         Returns:
-            webob.response:  response to this request, in JSON format with status 200 if success
+            dict:  response to this request, in JSON format with resultScore and comment if provided
         """
         response = {
             "@context": "http://purl.imsglobal.org/ctx/lis/v2/Result",
@@ -317,33 +315,15 @@ class LtiConsumer1p1(object):  # pylint: disable=bad-option-value, useless-objec
 
         return response
 
-    def delete_result(self):  # pylint: disable=unused-argument
+    def delete_result(self):
         """
-        Helper request handler for DELETE requests to LTI 2.0 result endpoint
-
-        DELETE handler for lti_2_0_result.  Assumes all authorization has been checked.
-
-        Arguments:
-            request (xblock.django.request.DjangoWebobRequest):  Request object (unused)
-            real_user (django.contrib.auth.models.User):  Actual user linked to anon_id in request path suffix
-
-        Returns:
-            webob.response:  response to this request.  status 200 if success
+        Returns response body for DELETE requests to LTI 2.0 result endpoint
         """
         return {}
 
     def put_result(self):
         """
-        Helper request handler for PUT requests to LTI 2.0 result endpoint
-
-        PUT handler for lti_2_0_result.  Assumes all authorization has been checked.
-
-        Arguments:
-            request (xblock.django.request.DjangoWebobRequest):  Request object
-            real_user (django.contrib.auth.models.User):  Actual user linked to anon_id in request path suffix
-
-        Returns:
-            webob.response:  response to this request.  status 200 if success.  404 if body of PUT request is malformed
+        Returns response body for PUT requests to LTI 2.0 result endpoint
         """
         return {}
 
@@ -369,7 +349,6 @@ class LtiConsumer1p1(object):  # pylint: disable=bad-option-value, useless-objec
                 content_type
             )
             raise LtiError(error_msg)
-
 
         # Check if scoring data is set, then append it to lti message
         # Raise if isn't set, since some scoring data is required for the launch

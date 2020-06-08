@@ -394,6 +394,21 @@ class LtiConsumerXBlock(StudioEditableXBlockMixin, XBlock):
         default=False,
         scope=Scope.settings
     )
+    user_username = String(
+        help=_("User's username; only used if ask_to_send_username is True, and user authorizes it."),
+        default=None,
+        scope=Scope.user_state
+    )
+    user_email = String(
+        help=_("User's email; only used if ask_to_send_email is True, and user authorizes it."),
+        default=None,
+        scope=Scope.user_state
+    )
+    user_language = String(
+        help=_("User's language preference."),
+        default=None,
+        scope=Scope.user_state
+    )
     enable_processors = Boolean(
         display_name=_("Send extra parameters"),
         help=_("Select True to send the extra parameters, which might contain Personally Identifiable Information. "
@@ -675,10 +690,14 @@ class LtiConsumerXBlock(StudioEditableXBlockMixin, XBlock):
 
         custom_parameters[six.text_type('custom_component_display_name')] = six.text_type(self.display_name)
 
-        if hasattr(self, 'due') and self.due is not None:
-            custom_parameters[six.text_type('custom_component_due_date')] = six.text_type(self.due.strftime('%Y-%m-%d %H:%M:%S'))
-            if hasattr(self, 'graceperiod') and self.graceperiod is not None:
-                custom_parameters[six.text_type('custom_component_graceperiod')] = six.text_type(self.graceperiod.total_seconds())
+        if self.due:  # pylint: disable=no-member
+            custom_parameters.update({
+                six.text_type('custom_component_due_date'): six.text_type(self.due.strftime('%Y-%m-%d %H:%M:%S'))  # pylint: disable=no-member
+            })
+            if self.graceperiod:  # pylint: disable=no-member
+                custom_parameters.update({
+                    six.text_type('custom_component_graceperiod'): six.text_type(self.graceperiod.total_seconds())  # pylint: disable=no-member
+                })
 
         return custom_parameters
 
@@ -697,6 +716,7 @@ class LtiConsumerXBlock(StudioEditableXBlockMixin, XBlock):
     def _get_lti1p1_consumer(self):
         """
         Returns a preconfigured LTI 1.1 consumer.
+
         If the block is configured to use LTI 1.1, set up a
         base LTI 1.1 consumer class.
         This class does NOT store state between calls.
@@ -704,6 +724,9 @@ class LtiConsumerXBlock(StudioEditableXBlockMixin, XBlock):
         return LtiConsumer1p1(self.launch_url)
 
     def extract_real_user_data(self):
+        """
+        Set actual user data on xblock from the runtime
+        """
         if callable(self.runtime.get_real_user):
             real_user_object = self.runtime.get_real_user(self.runtime.anonymous_student_id)
             self.user_email = getattr(real_user_object, "email", "")
@@ -763,9 +786,9 @@ class LtiConsumerXBlock(StudioEditableXBlockMixin, XBlock):
 
         username = None
         email = None
-        if self.ask_to_send_username and hasattr(self, 'user_username'):
+        if self.ask_to_send_username and self.user_username:
             username = self.user_username
-        if self.ask_to_send_email and hasattr(self, 'user_email'):
+        if self.ask_to_send_email and self.user_email:
             email = self.user_email
 
         lti_consumer.set_user_data(
@@ -784,7 +807,7 @@ class LtiConsumerXBlock(StudioEditableXBlockMixin, XBlock):
         if self.has_score:
             lti_consumer.set_outcome_service_url(self.outcome_service_url)
 
-        if hasattr(self, 'user_language'):
+        if self.user_language:
             lti_consumer.set_language_preference_data(self.user_language)
 
         lti_consumer.set_custom_parameters(self.prefixed_custom_parameters)
@@ -891,6 +914,18 @@ class LtiConsumerXBlock(StudioEditableXBlockMixin, XBlock):
         )
 
     def _result_service_get(self, lti_consumer, user):
+        """
+        Helper request handler for GET requests to LTI 2.0 result endpoint
+
+        GET handler for lti_2_0_result.  Assumes all authorization has been checked.
+
+        Arguments:
+            lti_consumer (lti_consumer.lti_1p1.LtiConsumer1p1):  LtiConsumer object that manages Lti1.1 interaction
+            user (django.contrib.auth.models.User):  Actual user linked to anon_id in request path suffix
+
+        Returns:
+            dict:  response to this request as dictated by the LtiConsumer
+        """
         self.runtime.rebind_noauth_module_to_user(self, user)
         args = []
         if self.module_score:
@@ -898,10 +933,35 @@ class LtiConsumerXBlock(StudioEditableXBlockMixin, XBlock):
         return lti_consumer.get_result(*args)
 
     def _result_service_delete(self, lti_consumer, user):
+        """
+        Helper request handler for DELETE requests to LTI 2.0 result endpoint
+
+        DELETE handler for lti_2_0_result.  Assumes all authorization has been checked.
+
+        Arguments:
+            lti_consumer (lti_consumer.lti_1p1.LtiConsumer1p1):  LtiConsumer object that manages Lti1.1 interaction
+            user (django.contrib.auth.models.User):  Actual user linked to anon_id in request path suffix
+
+        Returns:
+            dict:  response to this request as dictated by the LtiConsumer
+        """
         self.clear_user_module_score(user)
         return lti_consumer.delete_result()
 
     def _result_service_put(self, lti_consumer, user, result_json):
+        """
+        Helper request handler for PUT requests to LTI 2.0 result endpoint
+
+        PUT handler for lti_2_0_result.  Assumes all authorization has been checked.
+
+        Arguments:
+            lti_consumer (lti_consumer.lti_1p1.LtiConsumer1p1):  LtiConsumer object that manages Lti1.1 interaction
+            request (xblock.django.request.DjangoWebobRequest):  Request object
+            real_user (django.contrib.auth.models.User):  Actual user linked to anon_id in request path suffix
+
+        Returns:
+            dict:  response to this request as dictated by the LtiConsumer
+        """
         score, comment = parse_result_json(result_json)
 
         if score is None:

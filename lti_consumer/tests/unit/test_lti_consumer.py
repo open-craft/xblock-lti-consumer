@@ -238,23 +238,6 @@ class TestProperties(TestLtiConsumerXBlock):
         """
         Test `prefixed_custom_parameters` appropriately prefixes the configured custom params
         """
-        self.xblock.custom_parameters = ['param_1=true', 'param_2 = false', 'lti_version=1.1']
-
-        expected_params = {
-            u'custom_component_display_name': self.xblock.display_name,
-            u'custom_param_1': u'true',
-            u'custom_param_2': u'false',
-            u'lti_version': u'1.1'
-        }
-
-        params = self.xblock.prefixed_custom_parameters
-
-        self.assertEqual(params, expected_params)
-
-    def test_prefixed_custom_parameters_with_due_date_and_graceperiod(self):
-        """
-        Test `prefixed_custom_parameters` appropriately prefixes the configured custom params
-        """
         now = timezone.now()
         one_day = timedelta(days=1)
         self.xblock.due = now
@@ -400,7 +383,7 @@ class TestGetLti1p1Consumer(TestLtiConsumerXBlock):
         """
         Test LtiConsumer.generate_launch_request is called and a 200 HTML response is returned
         """
-        response = self.xblock._get_lti1p1_consumer()
+        self.xblock._get_lti1p1_consumer()  # pylint: disable=protected-access
 
         mock_lti_consumer.assert_called_with(self.xblock.launch_url)
 
@@ -417,12 +400,9 @@ class TestExtractRealUserData(TestLtiConsumerXBlock):
         self.xblock.runtime.get_real_user = NonCallableMock()
 
         self.xblock.extract_real_user_data()
-        with self.assertRaises(AttributeError):
-            self.xblock.user_email
-        with self.assertRaises(AttributeError):
-            self.xblock.user_username
-        with self.assertRaises(AttributeError):
-            self.xblock.user_language
+        self.assertIsNone(self.xblock.user_email)
+        self.assertIsNone(self.xblock.user_username)
+        self.assertIsNone(self.xblock.user_language)
 
     def test_get_real_user_callable(self):
         """
@@ -438,8 +418,7 @@ class TestExtractRealUserData(TestLtiConsumerXBlock):
         self.xblock.extract_real_user_data()
         self.assertEqual(self.xblock.user_email, fake_user.email)
         self.assertEqual(self.xblock.user_username, fake_user.username)
-        with self.assertRaises(AttributeError):
-            self.xblock.user_language
+        self.assertIsNone(self.xblock.user_language)
 
     def test_get_real_user_callable_with_language_preference(self):
         """
@@ -542,7 +521,9 @@ class TestLtiLaunchHandler(TestLtiConsumerXBlock):
     def setUp(self):
         super(TestLtiLaunchHandler, self).setUp()
         self.mock_lti_consumer = Mock(generate_launch_request=Mock(return_value={}))
-        self.xblock._get_lti1p1_consumer = Mock(return_value=self.mock_lti_consumer)
+        self.xblock._get_lti1p1_consumer = Mock(return_value=self.mock_lti_consumer)  # pylint: disable=protected-access
+        self.xblock.due = timezone.now()
+        self.xblock.graceperiod = timedelta(days=1)
         self.xblock.runtime.get_real_user = Mock(return_value=None)
 
     @patch('lti_consumer.lti_consumer.LtiConsumerXBlock.course')
@@ -754,7 +735,7 @@ class TestResultServiceHandler(TestLtiConsumerXBlock):
         mock_lti_consumer = Mock()
         mock_user = Mock()
 
-        response = self.xblock._result_service_get(mock_lti_consumer, mock_user)
+        self.xblock._result_service_get(mock_lti_consumer, mock_user)  # pylint: disable=protected-access
 
         mock_runtime.rebind_noauth_module_to_user.assert_called_with(self.xblock, mock_user)
         mock_lti_consumer.get_result.assert_called_with()
@@ -768,7 +749,7 @@ class TestResultServiceHandler(TestLtiConsumerXBlock):
         mock_lti_consumer = Mock()
         mock_user = Mock()
 
-        response = self.xblock._result_service_get(mock_lti_consumer, mock_user)
+        self.xblock._result_service_get(mock_lti_consumer, mock_user)  # pylint: disable=protected-access
 
         mock_lti_consumer.get_result.assert_called_with(0.5, 'test')
 
@@ -782,7 +763,7 @@ class TestResultServiceHandler(TestLtiConsumerXBlock):
         mock_lti_consumer = Mock()
         mock_user = Mock()
 
-        response = self.xblock._result_service_put(mock_lti_consumer, mock_user, '')
+        self.xblock._result_service_put(mock_lti_consumer, mock_user, '')  # pylint: disable=protected-access
 
         assert mock_parse_result_json.called
         assert mock_lti_consumer.put_result.called
@@ -795,7 +776,7 @@ class TestResultServiceHandler(TestLtiConsumerXBlock):
         """
         mock_lti_consumer = Mock()
         mock_user = Mock()
-        response = self.xblock._result_service_put(mock_lti_consumer, mock_user, '')
+        self.xblock._result_service_put(mock_lti_consumer, mock_user, '')  # pylint: disable=protected-access
 
         mock_clear_user_module_score.assert_called_with(mock_user)
 
@@ -808,7 +789,7 @@ class TestResultServiceHandler(TestLtiConsumerXBlock):
         """
         mock_lti_consumer = Mock()
         mock_user = Mock()
-        response = self.xblock._result_service_put(mock_lti_consumer, mock_user, '')
+        self.xblock._result_service_put(mock_lti_consumer, mock_user, '')  # pylint: disable=protected-access
 
         mock_set_user_module_score.assert_called_with(mock_user, 1, 10, 'comment')
 
@@ -819,7 +800,7 @@ class TestResultServiceHandler(TestLtiConsumerXBlock):
         """
         mock_lti_consumer = Mock()
         mock_user = Mock()
-        response = self.xblock._result_service_delete(mock_lti_consumer, mock_user)
+        self.xblock._result_service_delete(mock_lti_consumer, mock_user)  # pylint: disable=protected-access
 
         mock_clear_user_module_score.assert_called_with(mock_user)
         assert mock_lti_consumer.delete_result.called
