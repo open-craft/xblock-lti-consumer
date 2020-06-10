@@ -377,15 +377,21 @@ class TestGetLti1p1Consumer(TestLtiConsumerXBlock):
     """
     Unit tests for LtiConsumerXBlock._get_lti1p1_consumer()
     """
-
+    @patch('lti_consumer.lti_consumer.LtiConsumerXBlock.course')
     @patch('lti_consumer.lti_consumer.LtiConsumer1p1')
-    def test_lti_1p1_consumer_created(self, mock_lti_consumer):
+    def test_lti_1p1_consumer_created(self, mock_lti_consumer, mock_course):
         """
-        Test LtiConsumer.generate_launch_request is called and a 200 HTML response is returned
+        Test LtiConsumer1p1 is created with the launch_url, oauth_key, and oauth_secret
         """
+        provider = 'lti_provider'
+        key = 'test'
+        secret = 'secret'
+        self.xblock.lti_id = provider
+        type(mock_course).lti_passports = PropertyMock(return_value=["{}:{}:{}".format(provider, key, secret)])
+
         self.xblock._get_lti1p1_consumer()  # pylint: disable=protected-access
 
-        mock_lti_consumer.assert_called_with(self.xblock.launch_url)
+        mock_lti_consumer.assert_called_with(self.xblock.launch_url, key, secret)
 
 
 class TestExtractRealUserData(TestLtiConsumerXBlock):
@@ -575,6 +581,8 @@ class TestResultServiceHandler(TestLtiConsumerXBlock):
         self.xblock.runtime.debug = False
         self.xblock.runtime.get_real_user = Mock()
         self.xblock.accept_grades_past_due = True
+        self.mock_lti_consumer = Mock()
+        self.xblock._get_lti1p1_consumer = Mock(return_value=self.mock_lti_consumer)  # pylint: disable=protected-access
 
     @patch('lti_consumer.lti_consumer.log_authorization_header')
     @patch('lti_consumer.lti_consumer.LtiConsumerXBlock.lti_provider_key_secret')
@@ -611,18 +619,16 @@ class TestResultServiceHandler(TestLtiConsumerXBlock):
 
         self.assertEqual(response.status_code, 404)
 
-    @patch('lti_consumer.lti_1p1.consumer.LtiConsumer1p1.get_result')
     @patch('lti_consumer.lti_1p1.consumer.LtiConsumer1p1.verify_result_headers', Mock(return_value=True))
     @patch('lti_consumer.lti_consumer.parse_handler_suffix')
     @patch('lti_consumer.lti_consumer.LtiConsumerXBlock.is_past_due')
-    def test_accept_grades_past_due_true_and_is_past_due_true(self, mock_is_past_due, mock_parse_suffix,
-                                                              mock_get_result):
+    def test_accept_grades_past_due_true_and_is_past_due_true(self, mock_is_past_due, mock_parse_suffix):
         """
         Test 200 response returned when `accept_grades_past_due` is True and `is_past_due` is True
         """
         mock_is_past_due.__get__ = Mock(return_value=True)
         mock_parse_suffix.return_value = FAKE_USER_ID
-        mock_get_result.return_value = {}
+        self.mock_lti_consumer.get_result.return_value = {}
         response = self.xblock.result_service_handler(make_request('', 'GET'))
 
         self.assertEqual(response.status_code, 200)
@@ -637,14 +643,13 @@ class TestResultServiceHandler(TestLtiConsumerXBlock):
 
         self.assertEqual(response.status_code, 404)
 
-    @patch('lti_consumer.lti_1p1.consumer.LtiConsumer1p1.verify_result_headers')
     @patch('lti_consumer.lti_consumer.parse_handler_suffix')
-    def test_verify_headers_raises_error(self, mock_parse_suffix, mock_verify_result_headers):
+    def test_verify_headers_raises_error(self, mock_parse_suffix):
         """
         Test 401 response returned when `verify_result_headers` raises LtiError
         """
         mock_parse_suffix.return_value = FAKE_USER_ID
-        mock_verify_result_headers.side_effect = LtiError()
+        self.mock_lti_consumer.verify_result_headers.side_effect = LtiError()
         response = self.xblock.result_service_handler(make_request('', 'GET'))
 
         self.assertEqual(response.status_code, 401)

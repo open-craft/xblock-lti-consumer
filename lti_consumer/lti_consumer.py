@@ -721,7 +721,8 @@ class LtiConsumerXBlock(StudioEditableXBlockMixin, XBlock):
         base LTI 1.1 consumer class.
         This class does NOT store state between calls.
         """
-        return LtiConsumer1p1(self.launch_url)
+        key, secret = self.lti_provider_key_secret
+        return LtiConsumer1p1(self.launch_url, key, secret)
 
     def extract_real_user_data(self):
         """
@@ -781,9 +782,6 @@ class LtiConsumerXBlock(StudioEditableXBlockMixin, XBlock):
 
         lti_consumer = self._get_lti1p1_consumer()
 
-        key, secret = self.lti_provider_key_secret
-        lti_consumer.set_oauth_data(key, secret)
-
         username = None
         email = None
         if self.ask_to_send_username and self.user_username:
@@ -794,9 +792,9 @@ class LtiConsumerXBlock(StudioEditableXBlockMixin, XBlock):
         lti_consumer.set_user_data(
             self.user_id,
             self.role,
-            self.lis_result_sourcedid,
-            username,
-            email
+            result_sourcedid=self.lis_result_sourcedid,
+            person_sourcedid=username,
+            person_contact_email_primary=email
         )
         lti_consumer.set_context_data(
             self.context_id,
@@ -808,7 +806,7 @@ class LtiConsumerXBlock(StudioEditableXBlockMixin, XBlock):
             lti_consumer.set_outcome_service_url(self.outcome_service_url)
 
         if self.user_language:
-            lti_consumer.set_language_preference_data(self.user_language)
+            lti_consumer.set_launch_presentation_locale(self.user_language)
 
         lti_consumer.set_custom_parameters(self.prefixed_custom_parameters)
 

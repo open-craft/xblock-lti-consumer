@@ -134,44 +134,57 @@ class LtiConsumer1p1(object):  # pylint: disable=bad-option-value, useless-objec
     """
     CONTENT_TYPE_RESULT_JSON = 'application/vnd.ims.lis.v2.result+json'
 
-    def __init__(self, lti_launch_url):
+    def __init__(self, lti_launch_url, oauth_key, oauth_secret):
         """
         Initialize LTI 1.1 Consumer class
+
+        Arguments:
+            lti_launch_url (string):  URL to which the LTI Launch should be sent
+            oauth_key (string):  OAuth consumer key
+            oauth_secret (string):  OAuth consumer secret
         """
         self.lti_launch_url = lti_launch_url
-        self.oauth_key = None
-        self.oauth_secret = None
+        self.oauth_key = oauth_key
+        self.oauth_secret = oauth_secret
 
         # IMS LTI data
         self.lti_user_data = None
         self.lti_context_data = None
         self.lti_outcome_service_url = None
-        self.lti_language_preference_data = None
+        self.lti_launch_presentation_locale = None
         self.lti_custom_parameters = None
-
-    def set_oauth_data(self, oauth_key, oauth_secret):
-        self.oauth_key = oauth_key
-        self.oauth_secret = oauth_secret
 
     def set_user_data(
             self,
             user_id,
-            role,
-            result_sourcedid,
+            roles,
+            result_sourcedid=None,
             person_sourcedid=None,
             person_contact_email_primary=None
     ):
         """
         Set user data/roles
+
+        Arguments:
+            user_id (string):  Unique value identifying the user
+            roles (string):  A comma separated list of role values
+            result_sourcedid (string):  Indicates the LIS Result Identifier (if any)
+                and uniquely identifies a row and column within the Tool Consumer gradebook
+            person_sourcedid (string):  LIS identifier for the user account performing the launch
+            person_contact_email_primary (string):  Primary contact email address of the user
         """
         self.lti_user_data = {
             text_type('user_id'): user_id,
-            text_type('roles'): role,
-            text_type('lis_result_sourcedid'): result_sourcedid,
+            text_type('roles'): roles,
         }
 
         # Additonal user identity data
         # Optional user data that can be sent to the tool, if the block is configured to do so
+        if result_sourcedid:
+            self.lti_user_data.update({
+                text_type('lis_result_sourcedid'): result_sourcedid,
+            })
+
         if person_sourcedid:
             self.lti_user_data.update({
                 text_type('lis_person_sourcedid'): person_sourcedid,
@@ -185,6 +198,12 @@ class LtiConsumer1p1(object):  # pylint: disable=bad-option-value, useless-objec
     def set_context_data(self, context_id, context_title, context_label):
         """
         Set LTI context data
+
+        Arguments:
+            context_id (string):  Opaque identifier used to uniquely identify the
+                context that contains the link being launched
+            context_title (string):  Plain text title of the context
+            context_label (string):  Plain text label for the context
         """
         self.lti_context_data = {
             text_type('context_id'): context_id,
@@ -195,22 +214,37 @@ class LtiConsumer1p1(object):  # pylint: disable=bad-option-value, useless-objec
     def set_outcome_service_url(self, outcome_service_url):
         """
         Set outcome_service_url for scoring
+
+        Arguments:
+            outcome_service_url (string):  URL pointing to the outcome service. This
+                is required if the Tool Consumer is accepting outcomes for launches
+                associated with the resource_link_id
         """
         self.lti_outcome_service_url = {
             text_type('lis_outcome_service_url'): outcome_service_url,
         }
 
-    def set_language_preference_data(self, launch_presentation_locale):
+    def set_launch_presentation_locale(self, launch_presentation_locale):
         """
         Set launch presentation locale
+
+        Arguments:
+            launch_presentation_locale (string):  Language, country and variant as
+                represented using the IETF Best Practices for Tags for Identifying
+                Languages (BCP-47)
         """
-        self.lti_language_preference_data = {
+        self.lti_launch_presentation_locale = {
             text_type('launch_presentation_locale'): launch_presentation_locale
         }
 
     def set_custom_parameters(self, custom_parameters):
         """
-        Stores custom parameters configured for LTI launch
+        Sets custom parameters configured for LTI launch
+
+        Arguments:
+            outcome_service_url (string):  URL pointing to the outcome service. This
+                is required if the Tool Consumer is accepting outcomes for launches
+                associated with the resource_link_id
         """
         if not isinstance(custom_parameters, dict):
             raise ValueError("Custom parameters must be a key/value dictionary.")
@@ -222,7 +256,8 @@ class LtiConsumer1p1(object):  # pylint: disable=bad-option-value, useless-objec
         Signs LTI launch request and returns signature and OAuth parameters.
 
         Arguments:
-            None
+            resource_link_id (string):  Opaque identifier guaranteed to be unique
+                for every placement of the link
 
         Returns:
             dict: LTI launch parameters
@@ -256,8 +291,8 @@ class LtiConsumer1p1(object):  # pylint: disable=bad-option-value, useless-objec
         if self.lti_outcome_service_url:
             lti_parameters.update(self.lti_outcome_service_url)
 
-        if self.lti_language_preference_data:
-            lti_parameters.update(self.lti_language_preference_data)
+        if self.lti_launch_presentation_locale:
+            lti_parameters.update(self.lti_launch_presentation_locale)
 
         # Appending custom parameter for signing.
         if self.lti_custom_parameters:
