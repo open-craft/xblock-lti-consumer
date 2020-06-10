@@ -158,7 +158,7 @@ class LtiConsumer1p1(object):  # pylint: disable=bad-option-value, useless-objec
             self,
             user_id,
             roles,
-            result_sourcedid=None,
+            result_sourcedid,
             person_sourcedid=None,
             person_contact_email_primary=None
     ):
@@ -176,15 +176,11 @@ class LtiConsumer1p1(object):  # pylint: disable=bad-option-value, useless-objec
         self.lti_user_data = {
             text_type('user_id'): user_id,
             text_type('roles'): roles,
+            text_type('lis_result_sourcedid'): result_sourcedid,
         }
 
         # Additonal user identity data
         # Optional user data that can be sent to the tool, if the block is configured to do so
-        if result_sourcedid:
-            self.lti_user_data.update({
-                text_type('lis_result_sourcedid'): result_sourcedid,
-            })
-
         if person_sourcedid:
             self.lti_user_data.update({
                 text_type('lis_person_sourcedid'): person_sourcedid,

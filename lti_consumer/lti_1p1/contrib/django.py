@@ -1,6 +1,11 @@
 """
 This module provides functionality for rendering an LTI embed without an XBlock.
 """
+
+from __future__ import absolute_import, unicode_literals
+
+from xblockutils.resources import ResourceLoader
+
 from ..consumer import LtiConsumer1p1
 
 
@@ -16,7 +21,7 @@ def lti_embed(
     context_id,
     context_title,
     context_label,
-    result_sourcedid=None,
+    result_sourcedid,
     person_sourcedid=None,
     person_contact_email_primary=None,
     outcome_service_url=None,
@@ -29,7 +34,7 @@ def lti_embed(
     lti_consumer.set_user_data(
         user_id,
         roles,
-        result_sourcedid=result_sourcedid,
+        result_sourcedid,
         person_sourcedid=person_sourcedid,
         person_contact_email_primary=person_contact_email_primary
     )
@@ -46,7 +51,7 @@ def lti_embed(
         lti_consumer.set_launch_presentation_locale(launch_presentation_locale)
 
     lti_consumer.set_custom_parameters(
-        **{
+        {
             key: value
             for key, value in custom_parameters.items()
             if key.startswith('custom_')
@@ -60,5 +65,6 @@ def lti_embed(
         'element_id': html_element_id
     }
     context.update({'lti_parameters': lti_parameters})
-    template = loader.render_mako_template('/templates/html/lti_launch.html', context)
-    return Response(template, content_type='text/html')
+    loader = ResourceLoader(__name__)
+    template = loader.render_mako_template('../../templates/html/lti_launch.html', context)
+    return template
