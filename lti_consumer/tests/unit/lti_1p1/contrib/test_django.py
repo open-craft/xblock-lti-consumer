@@ -6,8 +6,7 @@ Unit tests for lti_consumer.lti module
 from __future__ import absolute_import, unicode_literals
 
 from django.test.testcases import TestCase
-from mock import Mock, PropertyMock, patch, ANY
-from six import text_type
+from mock import Mock, patch, ANY
 
 from lti_consumer.lti_1p1.contrib.django import lti_embed
 
@@ -33,7 +32,7 @@ class TestLtiEmbed(TestCase):
 
     def test_non_keyword_arguments_raise_type_error(self):
         with self.assertRaises(TypeError):
-            lti_embed(
+            lti_embed(  # pylint: disable=too-many-function-args,missing-kwoa
                 self.html_element_id,
                 self.lti_launch_url,
                 self.oauth_key,
@@ -50,7 +49,7 @@ class TestLtiEmbed(TestCase):
     def test_missing_required_arguments_raise_type_error(self):
         with self.assertRaises(TypeError):
             # Missing result_sourcedid
-            lti_embed(
+            lti_embed(  # pylint: disable=missing-kwoa
                 html_element_id=self.html_element_id,
                 lti_launch_url=self.lti_launch_url,
                 oauth_key=self.oauth_key,

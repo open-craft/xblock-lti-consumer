@@ -238,9 +238,11 @@ class LtiConsumer1p1(object):  # pylint: disable=bad-option-value, useless-objec
         Sets custom parameters configured for LTI launch
 
         Arguments:
-            outcome_service_url (string):  URL pointing to the outcome service. This
-                is required if the Tool Consumer is accepting outcomes for launches
-                associated with the resource_link_id
+            custom_parameters (dict):  Dictionary of custom key/value parameters
+                to be included in the LTI Launch
+
+        Raises:
+            ValueError if custom_parameters is not a dict
         """
         if not isinstance(custom_parameters, dict):
             raise ValueError("Custom parameters must be a key/value dictionary.")
@@ -386,6 +388,7 @@ class LtiConsumer1p1(object):  # pylint: disable=bad-option-value, useless-objec
         if self.lti_outcome_service_url:
             outcome_service_url = self.lti_outcome_service_url['lis_outcome_service_url']
         else:
+            log.error("[LTI]: v2.0 result service -- lis_outcome_service_url not set")
             raise ValueError("Required outcome_service_url not set.")
 
         try:
