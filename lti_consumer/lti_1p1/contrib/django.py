@@ -11,7 +11,7 @@ from ..consumer import LtiConsumer1p1
 
 
 def lti_embed(
-        *
+        *,
         html_element_id,
         lti_launch_url,
         oauth_key,
@@ -39,7 +39,7 @@ def lti_embed(
     compatible with python 3.5.X or higher
     See https://www.python.org/dev/peps/pep-3102/
 
-    This method will use the LtiConsumer1p1 class to generate an HTML form and 
+    This method will use the LtiConsumer1p1 class to generate an HTML form and
     JavaScript that will automatically launch the LTI embedding, but it does not
     generate any response to encapsulate this content. The caller of this method
     must render the HTML on their own.
