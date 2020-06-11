@@ -17,8 +17,8 @@ from lxml import etree
 from xblockutils.resources import ResourceLoader
 
 
-from .exceptions import LtiError
-from .oauth import verify_oauth_body_signature
+from .lti_1p1.exceptions import LtiError
+from .lti_1p1.oauth import verify_oauth_body_signature
 
 log = logging.getLogger(__name__)
 

@@ -8,10 +8,10 @@ import unittest
 
 from mock import Mock, patch
 
-from lti_consumer.exceptions import LtiError
-from lti_consumer.oauth import (get_oauth_request_signature,
-                                log_authorization_header,
-                                verify_oauth_body_signature)
+from lti_consumer.lti_1p1.exceptions import LtiError
+from lti_consumer.lti_1p1.oauth import (get_oauth_request_signature,
+                                        log_authorization_header,
+                                        verify_oauth_body_signature)
 from lti_consumer.tests.unit.test_utils import make_request
 
 OAUTH_PARAMS = [
@@ -89,7 +89,7 @@ class TestLogCorrectAuthorizationHeader(unittest.TestCase):
     Unit tests for `lti_consumer.oauth.log_authorization_header`
     """
 
-    @patch('lti_consumer.oauth.log')
+    @patch('lti_consumer.lti_1p1.oauth.log')
     def test_log_auth_header(self, mock_log):
         """
         Test that log.debug is called

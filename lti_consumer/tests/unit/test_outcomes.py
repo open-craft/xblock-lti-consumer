@@ -11,7 +11,7 @@ from copy import copy
 
 from mock import Mock, PropertyMock, patch
 
-from lti_consumer.exceptions import LtiError
+from lti_consumer.lti_1p1.exceptions import LtiError
 from lti_consumer.outcomes import OutcomeService, parse_grade_xml_body
 from lti_consumer.tests.unit.test_lti_consumer import TestLtiConsumerXBlock
 from lti_consumer.tests.unit.test_utils import make_request

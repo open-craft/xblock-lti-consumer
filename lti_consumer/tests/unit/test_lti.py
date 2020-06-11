@@ -11,8 +11,8 @@ from django.utils import timezone
 from mock import Mock, PropertyMock, patch
 from six import text_type
 
-from lti_consumer.exceptions import LtiError
 from lti_consumer.lti import LtiConsumer
+from lti_consumer.lti_1p1.exceptions import LtiError
 from lti_consumer.tests.unit.test_lti_consumer import TestLtiConsumerXBlock
 from lti_consumer.tests.unit.test_utils import (make_request,
                                                 patch_signed_parameters)

@@ -13,9 +13,9 @@ import six.moves.urllib.error
 import six.moves.urllib.parse
 from six import text_type
 
-from .exceptions import LtiError
 from .lti_1p1.consumer import parse_result_json
-from .oauth import get_oauth_request_signature, verify_oauth_body_signature
+from .lti_1p1.exceptions import LtiError
+from .lti_1p1.oauth import get_oauth_request_signature, verify_oauth_body_signature
 
 log = logging.getLogger(__name__)
 

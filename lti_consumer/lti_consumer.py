@@ -70,9 +70,9 @@ from xblock.validation import ValidationMessage
 from xblockutils.resources import ResourceLoader
 from xblockutils.studio_editable import StudioEditableXBlockMixin
 
-from .exceptions import LtiError
 from .lti_1p1.consumer import LtiConsumer1p1, parse_result_json, LTI_PARAMETERS
-from .oauth import log_authorization_header
+from .lti_1p1.exceptions import LtiError
+from .lti_1p1.oauth import log_authorization_header
 from .outcomes import OutcomeService
 from .utils import _
 

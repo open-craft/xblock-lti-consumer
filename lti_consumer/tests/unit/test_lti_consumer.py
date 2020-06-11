@@ -12,7 +12,7 @@ from django.test.testcases import TestCase
 from django.utils import timezone
 from mock import Mock, PropertyMock, NonCallableMock, patch
 
-from lti_consumer.exceptions import LtiError
+from lti_consumer.lti_1p1.exceptions import LtiError
 from lti_consumer.lti_consumer import LtiConsumerXBlock, parse_handler_suffix
 from lti_consumer.tests.unit import test_utils
 from lti_consumer.tests.unit.test_utils import (FAKE_USER_ID, make_request,
