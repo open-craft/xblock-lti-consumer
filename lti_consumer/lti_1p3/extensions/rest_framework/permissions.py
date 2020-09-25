@@ -38,7 +38,10 @@ class LtiAgsPermissions(permissions.BasePermission):
         elif view.action in ['create', 'update', 'partial_update', 'delete']:
             has_perm = request.lti_consumer.check_token(
                 auth_token,
-                'https://purl.imsglobal.org/spec/lti-ags/scope/lineitem'
+                [
+                    'https://purl.imsglobal.org/spec/lti-ags/scope/lineitem',
+                    'https://purl.imsglobal.org/spec/lti-ags/scope/score',
+                ],
             )
             return has_perm
         return False

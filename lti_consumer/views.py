@@ -1,4 +1,5 @@
 from rest_framework import viewsets
+from rest_framework.decorators import action
 from django_filters.rest_framework import DjangoFilterBackend
 
 from lti_consumer.models import LtiAgsLineItem
@@ -6,8 +7,14 @@ from lti_consumer.serializers import LtiAgsLineItemSerializer
 
 from lti_consumer.lti_1p3.extensions.rest_framework.permissions import LtiAgsPermissions
 from lti_consumer.lti_1p3.extensions.rest_framework.authentication import Lti1p3ApiAuthentication
-from lti_consumer.lti_1p3.extensions.rest_framework.renderers import LineItemsRenderer, LineItemRenderer
-from lti_consumer.lti_1p3.extensions.rest_framework.parsers import LineItemParser
+from lti_consumer.lti_1p3.extensions.rest_framework.renderers import (
+    LineItemsRenderer,
+    LineItemRenderer,
+)
+from lti_consumer.lti_1p3.extensions.rest_framework.parsers import (
+    LineItemParser,
+    LineItemScoreParser,
+)
 
 
 class LtiAgsLineItemViewset(viewsets.ModelViewSet):
@@ -26,7 +33,9 @@ class LtiAgsLineItemViewset(viewsets.ModelViewSet):
         LineItemsRenderer,
         LineItemRenderer,
     ]
-    parser_classes = [LineItemParser]
+    parser_classes = [
+        LineItemParser,
+    ]
 
     # Filters
     filter_backends = [DjangoFilterBackend]
@@ -56,3 +65,8 @@ class LtiAgsLineItemViewset(viewsets.ModelViewSet):
     def perform_create(self, serializer):
         lti_configuration = self.request.lti_configuration
         serializer.save(lti_configuration=lti_configuration)
+
+    @action(detail=True, methods=['POST'], parser_classes=[LineItemScoreParser])
+    def scores(self, request, *args, **kwargs):
+        line_item = self.get_object()
+        line_item.scores.create(**request.data)

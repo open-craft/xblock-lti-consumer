@@ -3,7 +3,7 @@ from rest_framework.reverse import reverse
 
 from openedx.core.lib.api.serializers import UsageKeyField
 
-from lti_consumer.models import LtiAgsLineItem
+from lti_consumer.models import LtiAgsLineItem, LtiAgsLineItemScore
 
 
 class LtiAgsLineItemSerializer(serializers.ModelSerializer):

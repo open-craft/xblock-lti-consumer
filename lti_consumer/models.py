@@ -1,7 +1,10 @@
 """
 LTI configuration and linking models.
 """
+from enum import Enum
+
 from django.db import models
+from django.core.exceptions import ValidationError
 
 from opaque_keys.edx.django.models import UsageKeyField
 
@@ -203,4 +206,70 @@ class LtiAgsLineItem(models.Model):
         return "{} - {}".format(
             self.resource_link_id,
             self.label,
+        )
+
+
+class LtiAgsScore(models.Model):
+    """
+    Model to store LineItem Score data for LTI Assignments and Grades service.
+
+    LTI-AGS Specification: https://www.imsglobal.org/spec/lti-ags/v2p0
+    Note: When implementing multi-tenancy support, this needs to be changed
+    and be tied to a deployment ID, because each deployment should isolate
+    it's resources.
+
+    .. no_pii:
+    """
+
+    class ActivityProgress(Enum):
+        INITIALIZED = 'Initialized'
+        STARTED = 'Started'
+        IN_PROGRESS = 'InProgress'
+        SUBMITTED = 'Submitted'
+        COMPLETED = 'Completed'
+
+
+    class GradingProgress(Enum):
+        FULLY_GRADED = 'FullyGraded'
+        PENDING = 'Pending'
+        PENDING_MANUAL = 'PendingManual'
+        FAILED = 'Failed'
+        NOT_READY = 'NotReady'
+
+    # LTI LineItem
+    # This links the score to a specific line item
+    line_item = models.ForeignKey(
+        LtiAgsLineItem,
+        on_delete=models.CASCADE,
+        related_name='scores',
+    )
+
+    _timestamp = models.DateTimeField(db_column='timestamp')
+    score_given = models.IntegerField()
+    score_maximum = models.IntegerField()
+    comment = models.TextField()
+    activity_progress = models.CharField(max_length=20, choices=LtiAgsScore.ActivityProgress.choices())
+    grading_progress = models.CharField(max_length=20, choices=LtiAgsScore.GradingProgress.choices())
+    user_id = models.CharField(
+        max_length=255,
+        db_column='external_user_id'
+    )
+
+    @property
+    def timestamp(self):
+        return self._timestamp
+
+    @timestamp.setter
+    def timestamp(self, value):
+        if self.timestamp > value:
+            raise ValidationError(
+                "Cannot set timestamp to a time in the past"
+            )
+
+        self._timestamp = value
+
+    def __str__(self):
+        return "{} Score ({})".format(
+            self.line_item,
+            self.score,
         )
