@@ -221,21 +221,6 @@ class LtiAgsScore(models.Model):
     .. no_pii:
     """
 
-    class ActivityProgress(Enum):
-        INITIALIZED = 'Initialized'
-        STARTED = 'Started'
-        IN_PROGRESS = 'InProgress'
-        SUBMITTED = 'Submitted'
-        COMPLETED = 'Completed'
-
-
-    class GradingProgress(Enum):
-        FULLY_GRADED = 'FullyGraded'
-        PENDING = 'Pending'
-        PENDING_MANUAL = 'PendingManual'
-        FAILED = 'Failed'
-        NOT_READY = 'NotReady'
-
     # LTI LineItem
     # This links the score to a specific line item
     line_item = models.ForeignKey(
@@ -244,29 +229,50 @@ class LtiAgsScore(models.Model):
         related_name='scores',
     )
 
-    _timestamp = models.DateTimeField(db_column='timestamp')
+    timestamp = models.DateTimeField()
     score_given = models.IntegerField()
     score_maximum = models.IntegerField()
     comment = models.TextField()
-    activity_progress = models.CharField(max_length=20, choices=LtiAgsScore.ActivityProgress.choices())
-    grading_progress = models.CharField(max_length=20, choices=LtiAgsScore.GradingProgress.choices())
-    user_id = models.CharField(
-        max_length=255,
-        db_column='external_user_id'
+
+    # Activity Progress Choices
+    INITIALIZED = 'initialized'
+    STARTED = 'started'
+    IN_PROGRESS = 'in_progress'
+    SUBMITTED = 'submitted'
+    COMPLETED = 'completed'
+
+    ACTIVITY_PROGRESS_CHOICES = [
+        (INITIALIZED, 'Initialized'),
+        (STARTED, 'Started'),
+        (IN_PROGRESS, 'InProgress'),
+        (SUBMITTED, 'Submitted'),
+        (COMPLETED, 'Completed'),
+    ]
+    activity_progress = models.CharField(
+        max_length=20,
+        choices=ACTIVITY_PROGRESS_CHOICES
     )
 
-    @property
-    def timestamp(self):
-        return self._timestamp
+    # Grading Progress Choices
+    FULLY_GRADED = 'fully_graded'
+    PENDING = 'pending'
+    PENDING_MANUAL = 'pending_manual'
+    FAILED = 'failed'
+    NOT_READY = 'not_ready'
 
-    @timestamp.setter
-    def timestamp(self, value):
-        if self.timestamp > value:
-            raise ValidationError(
-                "Cannot set timestamp to a time in the past"
-            )
+    GRADING_PROGRESS_CHOICES = [
+        (FULLY_GRADED, 'FullyGraded'),
+        (PENDING, 'Pending'),
+        (PENDING_MANUAL, 'PendingManual'),
+        (FAILED, 'Failed'),
+        (NOT_READY, 'NotReady'),
+    ]
+    grading_progress = models.CharField(
+        max_length=20,
+        choices=GRADING_PROGRESS_CHOICES
+    )
 
-        self._timestamp = value
+    user_id = models.CharField(max_length=255)
 
     def __str__(self):
         return "{} Score ({})".format(

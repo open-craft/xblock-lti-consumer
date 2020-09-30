@@ -3,7 +3,7 @@ from rest_framework.reverse import reverse
 
 from openedx.core.lib.api.serializers import UsageKeyField
 
-from lti_consumer.models import LtiAgsLineItem, LtiAgsLineItemScore
+from lti_consumer.models import LtiAgsLineItem, LtiAgsScore
 
 
 class LtiAgsLineItemSerializer(serializers.ModelSerializer):
@@ -62,4 +62,47 @@ class LtiAgsLineItemSerializer(serializers.ModelSerializer):
             'resourceLinkId',
             'startDateTime',
             'endDateTime',
+        )
+
+
+class LtiAgsScoreSerializer(serializers.ModelSerializer):
+    """
+    LTI AGS LineItemScore Serializer.
+
+    This maps out the internally stored LineItemScoreParameters to
+    the LTI-AGS API Specification, as shown in the example
+    response below:
+
+    {
+      "timestamp": "2017-04-16T18:54:36.736+00:00",
+      "scoreGiven" : 83,
+      "scoreMaximum" : 100,
+      "comment" : "This is exceptional work.",
+      "activityProgress" : "Completed",
+      "gradingProgress": "FullyGraded",
+      "userId" : "5323497"
+    }
+
+    Reference:
+    https://www.imsglobal.org/spec/lti-ags/v2p0#example-application-vnd-ims-lis-v1-score-json-representation
+    """
+
+    timestamp = serializers.DateTimeField()
+    scoreGiven = serializers.IntegerField(source='score_given')
+    scoreMaximum = serializers.IntegerField(source='score_maximum')
+    comment = serializers.CharField()
+    activityProgress = serializers.CharField(source='activity_progress')
+    gradingProgress = serializers.CharField(source='grading_progress')
+    userId = serializers.CharField(source='user_id')
+
+    class Meta:
+        model = LtiAgsScore
+        fields = (
+            'timestamp',
+            'scoreGiven',
+            'scoreMaximum',
+            'comment',
+            'activityProgress',
+            'gradingProgress',
+            'userId',
         )

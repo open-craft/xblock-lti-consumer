@@ -1,9 +1,13 @@
-from rest_framework import viewsets
+from rest_framework import viewsets, status
 from rest_framework.decorators import action
+from rest_framework.response import Response
 from django_filters.rest_framework import DjangoFilterBackend
 
 from lti_consumer.models import LtiAgsLineItem
-from lti_consumer.serializers import LtiAgsLineItemSerializer
+from lti_consumer.serializers import (
+    LtiAgsLineItemSerializer,
+    LtiAgsScoreSerializer,
+)
 
 from lti_consumer.lti_1p3.extensions.rest_framework.permissions import LtiAgsPermissions
 from lti_consumer.lti_1p3.extensions.rest_framework.authentication import Lti1p3ApiAuthentication
@@ -35,6 +39,7 @@ class LtiAgsLineItemViewset(viewsets.ModelViewSet):
     ]
     parser_classes = [
         LineItemParser,
+        LineItemScoreParser,
     ]
 
     # Filters
@@ -69,4 +74,8 @@ class LtiAgsLineItemViewset(viewsets.ModelViewSet):
     @action(detail=True, methods=['POST'], parser_classes=[LineItemScoreParser])
     def scores(self, request, *args, **kwargs):
         line_item = self.get_object()
-        line_item.scores.create(**request.data)
+        serializer = LtiAgsScoreSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        serializer.save(line_item=line_item)
+        headers = self.get_success_headers(serializer.data)
+        return Response(serializer.data, status=status.HTTP_201_CREATED, headers=headers)
