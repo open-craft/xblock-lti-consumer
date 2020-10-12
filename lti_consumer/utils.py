@@ -31,38 +31,39 @@ def get_lms_base():
     return settings.LMS_ROOT_URL
 
 
-def get_lms_lti_keyset_link(location):
+def get_lms_lti_keyset_link(lti_configuration):
     """
     Returns an LMS link to LTI public keyset endpoint
 
     :param location: the location of the block
     """
-    return "{lms_base}/api/lti_consumer/v1/public_keysets/{location}".format(
+    return "{lms_base}/api/lti_consumer/v1/lti/{lti_config_id}/public_keysets/".format(
         lms_base=get_lms_base(),
-        location=str(location),
+        lti_config_id=str(lti_configuration.id),
     )
 
 
-def get_lms_lti_launch_link():
+def get_lms_lti_launch_link(lti_configuration):
     """
     Returns an LMS link to LTI Launch endpoint
 
     :param location: the location of the block
     """
-    return "{lms_base}/api/lti_consumer/v1/launch/".format(
+    return "{lms_base}/api/lti_consumer/v1/lti/{lti_config_id}/launch/".format(
         lms_base=get_lms_base(),
+        lti_config_id=str(lti_configuration.id),
     )
 
 
-def get_lms_lti_access_token_link(location):
+def get_lms_lti_access_token_link(lti_configuration):
     """
     Returns an LMS link to LTI Launch endpoint
 
     :param location: the location of the block
     """
-    return "{lms_base}/api/lti_consumer/v1/token/{location}".format(
+    return "{lms_base}/api/lti_consumer/v1/lti/{lti_config_id}/token/".format(
         lms_base=get_lms_base(),
-        location=str(location),
+        lti_config_id=str(lti_configuration.id),
     )
 
 

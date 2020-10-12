@@ -15,12 +15,18 @@ from lti_consumer.plugin.views import (
     access_token_endpoint,
     # LTI Advantage URLs
     LtiAgsLineItemViewset,
+    PublicKeySetViewSet,
+    LaunchGateViewSet,
+    TokenViewSet,
 )
 
 
 # LTI 1.3 APIs router
 router = routers.SimpleRouter(trailing_slash=False)
 router.register(r'lti-ags', LtiAgsLineItemViewset, basename='lti-ags-view')
+router.register(r'public_keysets', PublicKeySetViewSet, basename='public-keysets')
+router.register(r'launch', LaunchGateViewSet)
+router.register(r'token', TokenViewSet)
 
 
 app_name = 'lti_consumer'

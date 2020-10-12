@@ -1035,7 +1035,7 @@ class LtiConsumerXBlock(StudioEditableXBlockMixin, XBlock):
         """
         lti_consumer = self._get_lti_consumer()
         context = lti_consumer.prepare_preflight_url(
-            callback_url=get_lms_lti_launch_link(),
+            callback_url=get_lms_lti_launch_link(request.lti_configuration),
             hint=str(self.location),  # pylint: disable=no-member
             lti_hint=str(self.location)  # pylint: disable=no-member
         )

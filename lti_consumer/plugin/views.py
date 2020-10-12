@@ -1,14 +1,25 @@
 """
 LTI consumer plugin passthrough views
 """
-from django.http import HttpResponse
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_http_methods
 from django_filters.rest_framework import DjangoFilterBackend
 from opaque_keys.edx.keys import UsageKey
 from rest_framework import viewsets
+from rest_framework.decorators import action
+import urllib.parse
+from webob import Response
 
-from lti_consumer.models import LtiAgsLineItem
+from lti_consumer.models import LtiConfiguration, LtiAgsLineItem
+from lti_consumer.lti_1p3.exceptions import (
+    Lti1p3Exception,
+    UnsupportedGrantType,
+    MalformedJwtToken,
+    MissingRequiredClaim,
+    NoSuitableKeys,
+    TokenSignatureExpired,
+    UnknownClientId,
+)
 from lti_consumer.lti_1p3.extensions.rest_framework.serializers import LtiAgsLineItemSerializer
 from lti_consumer.lti_1p3.extensions.rest_framework.permissions import LtiAgsPermissions
 from lti_consumer.lti_1p3.extensions.rest_framework.authentication import Lti1p3ApiAuthentication
@@ -39,7 +50,7 @@ def public_keyset_endpoint(request, usage_id=None):
             handler='public_keyset_endpoint'
         )
     except Exception:  # pylint: disable=broad-except
-        return HttpResponse(status=404)
+        return Response(status=404)
 
 
 @require_http_methods(["GET", "POST"])
@@ -64,7 +75,7 @@ def launch_gate_endpoint(request, suffix):
             suffix=suffix
         )
     except Exception:  # pylint: disable=broad-except
-        return HttpResponse(status=404)
+        return Response(status=404)
 
 
 @csrf_exempt
@@ -83,7 +94,7 @@ def access_token_endpoint(request, usage_id=None):
             handler='lti_1p3_access_token'
         )
     except Exception:  # pylint: disable=broad-except
-        return HttpResponse(status=404)
+        return Response(status=404)
 
 
 class LtiAgsLineItemViewset(viewsets.ModelViewSet):
@@ -130,3 +141,169 @@ class LtiAgsLineItemViewset(viewsets.ModelViewSet):
     def perform_create(self, serializer):
         lti_configuration = self.request.lti_configuration
         serializer.save(lti_configuration=lti_configuration)
+
+
+class PublicKeySetView(viewsets.ViewSet):
+    """
+    API endpoint to retrieve public keys sets for an LtiConfiguration
+
+    This endpoint is only valid when a LTI 1.3 tool is being used.
+    """
+
+    def list(self, request, *args, **kwargs):
+        lti_config = request.lti_configuration
+        if lti_config.version != LtiConfiguration.LTI_1P3:
+            return Response(status=404)
+
+        return Response(
+            json_body=lti_config.get_lti_consumer().get_public_keyset(),
+            content_type='application/json',
+            content_disposition='attachment; filename=keyset.json'
+        )
+
+
+class LaunchGateViewSet(viewsets.ViewSet):
+    """
+    API endpoint for launching the LTI 1.3 tool.
+
+    This endpoint is only valid when a LTI 1.3 tool is being used.
+
+    Returns:
+        webob.response: HTML LTI launch form or error page if misconfigured
+    """
+
+    # Handles GET requests with no suffix
+    def list(self, request, *args, **kwargs):
+        return self._handle_request(request, *args, **kwargs)
+
+    # Handles POST requests with no suffix
+    def create(self, request, *args, **kwargs):
+        return self._handle_request(request, *args, **kwargs)
+
+    # Handles GET and POST requests with suffix
+    @action(
+        detail=False,
+        methods=['GET', 'POST'],
+        url_path='(?P<suffix>[^/.]+?'
+    )
+    def suffix(self, request, suffix, *args, **kwargs):
+        return self._handle_request(request, *args, suffix=suffix, **kwargs)
+
+    def _handle_request(self, request, *args, **kwargs):
+        lti_config = request.lti_configuration
+        if lti_config.version != LtiConfiguration.LTI_1P3:
+            return Response(status=404)
+
+        try:
+            xblock = lti_config.block
+            usage_key = lti_config.location
+
+            loader = ResourceLoader(__name__)
+            context = {}
+
+            lti_consumer = lti_config.get_lti_consumer()
+
+            try:
+                # Pass user data
+                lti_consumer.set_user_data(
+                    user_id=xblock.external_user_id,
+                    # Pass django user role to library
+                    role=xblock.runtime.get_user_role()
+                )
+
+                # Set launch context
+                # Hardcoded for now, but we need to translate from
+                # self.launch_target to one of the LTI compliant names,
+                # either `iframe`, `frame` or `window`
+                # This is optional though
+                lti_consumer.set_launch_presentation_claim('iframe')
+
+                # Set context claim
+                # This is optional
+                context_title = " - ".join([
+                    xblock.course.display_name_with_default,
+                    xblock.course.display_org_with_default
+                ])
+                lti_consumer.set_context_claim(
+                    xblock.context_id,
+                    context_types=[LTI_1P3_CONTEXT_TYPE.course_offering],
+                    context_title=context_title,
+                    context_label=xblock.context_id
+                )
+
+                context.update({
+                    "preflight_response": dict(request.GET),
+                    "launch_request": lti_consumer.generate_launch_request(
+                        resource_link=str(usage_key),  # pylint: disable=no-member
+                        preflight_response=dict(request.GET)
+                    )
+                })
+
+                context.update({'launch_url': xblock.lti_1p3_launch_url})
+                template = loader.render_mako_template('/templates/html/lti_1p3_launch.html', context)
+                return Response(template, content_type='text/html')
+            except Lti1p3Exception:
+                template = loader.render_mako_template('/templates/html/lti_1p3_launch_error.html', context)
+                return Response(template, status=400, content_type='text/html')
+        except Exception:  # pylint: disable=broad-except
+            return Response(status=404)
+
+
+class TokenView(viewsets.ViewSet):
+    """
+    API endpoint to create access tokens for the LTI 1.3 tool.
+
+    This endpoint is only valid when a LTI 1.3 tool is being used.
+
+    Returns:
+        webob.response:
+            Either an access token or error message detailing the failure.
+            All responses are RFC 6749 compliant.
+
+    References:
+        Sucess: https://tools.ietf.org/html/rfc6749#section-4.4.3
+        Failure: https://tools.ietf.org/html/rfc6749#section-5.2
+    """
+
+    def create(self, request, *args, **kwargs):
+        lti_config = request.lti_configuration
+        if lti_config.version != LtiConfiguration.LTI_1P3:
+            return Response(status=404)
+
+        lti_consumer = lti_config.get_lti_consumer()
+        try:
+            token = lti_consumer.access_token(
+                dict(urllib.parse.parse_qsl(
+                    request.body.decode('utf-8'),
+                    keep_blank_values=True
+                ))
+            )
+            # The returned `token` is compliant with RFC 6749 so we just
+            # need to return a 200 OK response with the token as Json body
+            return Response(json_body=token, content_type="application/json")
+
+        # Handle errors and return a proper response
+        except MissingRequiredClaim:
+            # Missing request attibutes
+            return Response(
+                json_body={"error": "invalid_request"},
+                status=400
+            )
+        except (MalformedJwtToken, TokenSignatureExpired):
+            # Triggered when a invalid grant token is used
+            return Response(
+                json_body={"error": "invalid_grant"},
+                status=400,
+            )
+        except (NoSuitableKeys, UnknownClientId):
+            # Client ID is not registered in the block or
+            # isn't possible to validate token using available keys.
+            return Response(
+                json_body={"error": "invalid_client"},
+                status=400,
+            )
+        except UnsupportedGrantType:
+            return Response(
+                json_body={"error": "unsupported_grant_type"},
+                status=400,
+            )
