@@ -69,6 +69,7 @@ from xblock.validation import ValidationMessage
 from xblockutils.resources import ResourceLoader
 from xblockutils.studio_editable import StudioEditableXBlockMixin
 
+from .api import get_lti_config_id
 from .exceptions import LtiError
 from .lti_1p1.consumer import LtiConsumer1p1, parse_result_json, LTI_PARAMETERS
 from .lti_1p1.oauth import log_authorization_header
@@ -88,6 +89,7 @@ from .utils import (
     get_lms_lti_access_token_link,
     get_lms_lti_keyset_link,
     get_lms_lti_launch_link,
+    get_lms_lti_oidc_callback_link,
     lti_1p3_enabled,
 )
 
@@ -933,9 +935,9 @@ class LtiConsumerXBlock(StudioEditableXBlockMixin, XBlock):
             "client": self.lti_1p3_client_id,
             "deployment_id": "1",
             "keyset_url": get_lms_lti_keyset_link(lti_config_id),
-            "oidc_callback": get_lms_lti_launch_link(lti_config_id),
+            "oidc_callback": get_lms_lti_oidc_callback_link(lti_config_id),
             "token_url": get_lms_lti_access_token_link(lti_config_id),
-            "launch_url": self.lti_1p3_launch_url,
+            "launch_url": get_lms_lti_launch_link(lti_config_id),
         }
         fragment.add_content(loader.render_mako_template('/templates/html/lti_1p3_studio.html', context))
         fragment.add_css(loader.load_unicode('static/css/student.css'))
@@ -1039,7 +1041,7 @@ class LtiConsumerXBlock(StudioEditableXBlockMixin, XBlock):
         lti_config_id = get_lti_config_id(self.lti_version, self.location)  # pylint: disable=no-member
 
         context = lti_consumer.prepare_preflight_url(
-            callback_url=get_lms_lti_launch_link(lti_config_id),
+            callback_url=get_lms_lti_oidc_callback_link(lti_config_id),
             hint=str(self.location),  # pylint: disable=no-member
             lti_hint=str(self.location)  # pylint: disable=no-member
         )
@@ -1065,6 +1067,7 @@ class LtiConsumerXBlock(StudioEditableXBlockMixin, XBlock):
         context = {}
 
         lti_consumer = self._get_lti_consumer()
+        lti_config_id = get_lti_config_id(self.lti_version, self.location)  # pylint: disable=no-member
 
         try:
             # Pass user data
@@ -1102,7 +1105,7 @@ class LtiConsumerXBlock(StudioEditableXBlockMixin, XBlock):
                 )
             })
 
-            context.update({'launch_url': self.lti_1p3_launch_url})
+            context.update({'launch_url': get_lms_lti_launch_link(lti_config_id)})
             template = loader.render_mako_template('/templates/html/lti_1p3_launch.html', context)
             return Response(template, content_type='text/html')
         except Lti1p3Exception:
@@ -1409,14 +1412,17 @@ class LtiConsumerXBlock(StudioEditableXBlockMixin, XBlock):
         allowed_attributes = dict(bleach.sanitizer.ALLOWED_ATTRIBUTES, **{'img': ['src', 'alt']})
         sanitized_comment = bleach.clean(self.score_comment, tags=allowed_tags, attributes=allowed_attributes)
 
+        #
+        lti_config_id = get_lti_config_id(self.lti_version, self.location)  # pylint: disable=no-member
+
         # Set launch handler depending on LTI version
         lti_block_launch_handler = self.runtime.handler_url(self, 'lti_launch_handler').rstrip('/?')
         if self.lti_version == 'lti_1p3':
-            lti_block_launch_handler = self.runtime.handler_url(self, 'lti_1p3_launch_handler').rstrip('/?')
+            lti_block_launch_handler = get_lms_lti_launch_link(lti_config_id)
 
         return {
             'launch_url': self.launch_url.strip(),
-            'lti_1p3_launch_url': self.lti_1p3_launch_url.strip(),
+            'lti_1p3_launch_url': get_lms_lti_launch_link(lti_config_id),
             'element_id': self.location.html_id(),  # pylint: disable=no-member
             'element_class': self.category,
             'launch_target': self.launch_target,

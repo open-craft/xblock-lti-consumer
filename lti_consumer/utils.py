@@ -52,7 +52,7 @@ def get_lms_lti_keyset_link(lti_config_id):
     return get_lms_lti_link(lti_config_id, extra_path='public_keysets')
 
 
-def get_lms_lti_launch_link(lti_config_id):
+def get_lms_lti_oidc_callback_link(lti_config_id):
     """
     Returns an LMS link to LTI Launch endpoint
 
@@ -61,7 +61,7 @@ def get_lms_lti_launch_link(lti_config_id):
     return get_lms_lti_link(lti_config_id, extra_path='launch')
 
 
-def get_lms_lti_oidc_link(lti_config_id):
+def get_lms_lti_launch_link(lti_config_id):
     """
     Returns an LMS link to LTI OIDC Preflight endpoint
 

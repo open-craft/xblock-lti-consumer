@@ -99,7 +99,24 @@ def access_token_endpoint(request, usage_id=None):
         return Response(status=404)
 
 
-class LtiAgsLineItemViewset(viewsets.ModelViewSet):
+class Lti1p3ApiViewSet(viewsets.ModelViewSet):
+
+    authentication_classes = [Lti1p3ApiAuthentication]
+
+    def get_queryset(self):
+        lti_configuration = self.request.lti_configuration
+
+        # Return all LineItems related to the LTI configuration.
+        # TODO:
+        # Note that each configuration currently maps 1:1
+        # to each resource link (block), and this filter needs
+        # improved once we start reusing LTI configurations.
+        return LtiAgsLineItem.objects.filter(
+            lti_configuration=lti_configuration
+        )
+
+
+class LtiAgsLineItemViewSet(Lti1p3ApiViewSet):
     """
     LineItem endpoint implementation from LTI Advantage.
 
@@ -110,7 +127,6 @@ class LtiAgsLineItemViewset(viewsets.ModelViewSet):
     pagination_class = None
 
     # Custom permission classes for LTI APIs
-    authentication_classes = [Lti1p3ApiAuthentication]
     permission_classes = [LtiAgsPermissions]
 
     # Renderer/parser classes to accept LTI AGS content types
@@ -128,25 +144,13 @@ class LtiAgsLineItemViewset(viewsets.ModelViewSet):
         'tag'
     ]
 
-    def get_queryset(self):
-        lti_configuration = self.request.lti_configuration
-
-        # Return all LineItems related to the LTI configuration.
-        # TODO:
-        # Note that each configuration currently maps 1:1
-        # to each resource link (block), and this filter needs
-        # improved once we start reusing LTI configurations.
-        return LtiAgsLineItem.objects.filter(
-            lti_configuration=lti_configuration
-        )
-
     def perform_create(self, serializer):
         lti_configuration = self.request.lti_configuration
         serializer.save(lti_configuration=lti_configuration)
 
 
 @method_decorator(xframe_options_exempt, name='list')
-class LaunchGateViewSet(viewsets.ViewSet):
+class LaunchGateViewSet(Lti1p3ApiViewSet):
     """
     API endpoint for launching the LTI 1.3 tool.
 
@@ -209,7 +213,7 @@ class LaunchGateViewSet(viewsets.ViewSet):
                 )
             })
 
-            context.update({'launch_url': xblock.lti_1p3_launch_url})
+            context.update({'launch_url': get_lms_lti_launch_link(lti_config.id)})
             template = loader.render_mako_template('/templates/html/lti_1p3_launch.html', context)
             return Response(template, content_type='text/html')
         except Lti1p3Exception:
@@ -220,7 +224,7 @@ class LaunchGateViewSet(viewsets.ViewSet):
 
 
 @method_decorator(xframe_options_exempt, name='list')
-class OIDCViewSet(viewsets.ViewSet):
+class OIDCViewSet(Lti1p3ApiViewSet):
     """
     API endpoint to initiate an OIDC Preflight Request for an LTI1.3 Launch
 
@@ -233,7 +237,7 @@ class OIDCViewSet(viewsets.ViewSet):
 
         lti_consumer = lti_config.get_lti_consumer()
         context = lti_consumer.prepare_preflight_url(
-            callback_url=get_lms_lti_launch_link(lti_config.id),
+            callback_url=get_lms_lti_oidc_callback_link(lti_config.id),
             hint=str(lti_config.location),
             lti_hint=str(lti_config.location)
         )
@@ -243,7 +247,7 @@ class OIDCViewSet(viewsets.ViewSet):
         return Response(template, content_type='text/html')
 
 
-class PublicKeySetViewSet(viewsets.ViewSet):
+class PublicKeySetViewSet(Lti1p3ApiViewSet):
     """
     API endpoint to retrieve public keys sets for an LtiConfiguration
 
@@ -263,7 +267,7 @@ class PublicKeySetViewSet(viewsets.ViewSet):
 
 
 @method_decorator(csrf_exempt, name='create')
-class TokenViewSet(viewsets.ViewSet):
+class TokenViewSet(Lti1p3ApiViewSet):
     """
     API endpoint to create access tokens for the LTI 1.3 tool.
 
