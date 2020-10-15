@@ -925,14 +925,16 @@ class LtiConsumerXBlock(StudioEditableXBlockMixin, XBlock):
         if self.lti_version == "lti_1p1":
             return self.student_view(context)
 
+        lti_config_id = get_lti_config_id(self.lti_version, self.location)  # pylint: disable=no-member
+
         fragment = Fragment()
         loader = ResourceLoader(__name__)
         context = {
             "client": self.lti_1p3_client_id,
             "deployment_id": "1",
-            "keyset_url": get_lms_lti_keyset_link(self.location),  # pylint: disable=no-member
-            "oidc_callback": get_lms_lti_launch_link(),
-            "token_url": get_lms_lti_access_token_link(self.location),  # pylint: disable=no-member
+            "keyset_url": get_lms_lti_keyset_link(lti_config_id),
+            "oidc_callback": get_lms_lti_launch_link(lti_config_id),
+            "token_url": get_lms_lti_access_token_link(lti_config_id),
             "launch_url": self.lti_1p3_launch_url,
         }
         fragment.add_content(loader.render_mako_template('/templates/html/lti_1p3_studio.html', context))
@@ -1034,8 +1036,10 @@ class LtiConsumerXBlock(StudioEditableXBlockMixin, XBlock):
             webob.response: HTML LTI launch form
         """
         lti_consumer = self._get_lti_consumer()
+        lti_config_id = get_lti_config_id(self.lti_version, self.location)  # pylint: disable=no-member
+
         context = lti_consumer.prepare_preflight_url(
-            callback_url=get_lms_lti_launch_link(request.lti_configuration),
+            callback_url=get_lms_lti_launch_link(lti_config_id),
             hint=str(self.location),  # pylint: disable=no-member
             lti_hint=str(self.location)  # pylint: disable=no-member
         )

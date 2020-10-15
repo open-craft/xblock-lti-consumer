@@ -13,21 +13,27 @@ from lti_consumer.plugin.views import (
     public_keyset_endpoint,
     launch_gate_endpoint,
     access_token_endpoint,
+    # LTI Configuration Launch URLs
+    LaunchGateViewSet,
+    OIDCSetViewSet,
+    PublicKeySetViewSet,
+    TokenViewSet,
     # LTI Advantage URLs
     LtiAgsLineItemViewset,
-    PublicKeySetViewSet,
-    LaunchGateViewSet,
-    TokenViewSet,
 )
 
 
 # LTI 1.3 APIs router
-router = routers.SimpleRouter(trailing_slash=False)
-router.register(r'lti-ags', LtiAgsLineItemViewset, basename='lti-ags-view')
-router.register(r'public_keysets', PublicKeySetViewSet, basename='public-keysets')
-router.register(r'launch', LaunchGateViewSet)
-router.register(r'token', TokenViewSet)
+lti_1p3_router = routers.SimpleRouter(trailing_slash=False)
 
+# LTI Configuration Launch URLs
+lti_1p3_router.register(r'launch', LaunchGateViewSet)
+lti_1p3_router.register(r'oidc', OIDCViewSet)
+lti_1p3_router.register(r'public_keysets', PublicKeySetViewSet, basename='public-keysets')
+lti_1p3_router.register(r'token', TokenViewSet)
+
+# LTI Advantage URLs
+lti_1p3_router.register(r'lti-ags', LtiAgsLineItemViewset, basename='lti-ags-view')
 
 app_name = 'lti_consumer'
 urlpatterns = [
@@ -48,6 +54,6 @@ urlpatterns = [
     ),
     url(
         r'lti_consumer/v1/lti/(?P<lti_config_id>[-\w]+)/',
-        include(router.urls)
+        include(lti_1p3_router.urls)
     )
 ]

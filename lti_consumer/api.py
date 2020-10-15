@@ -31,6 +31,16 @@ def _get_or_create_local_lti_config(lti_version, block_location):
     return lti_config
 
 
+def get_lti_config_id(lti_version, block_location):
+    """
+    Retrieve the ID of the LTI Configuration for this block.
+    """
+    lti_config = _get_or_create_local_lti_config(lti_version, block_location)
+
+    # Return configuration ID
+    return lti_config.id
+
+
 def get_lti_consumer(config_id=None, block=None):
     """
     Retrieves an LTI Consumer instance for a given configuration.

@@ -31,40 +31,52 @@ def get_lms_base():
     return settings.LMS_ROOT_URL
 
 
-def get_lms_lti_keyset_link(lti_configuration):
+def get_lms_lti_link(lti_config_id, extra_path=None):
+    link = "{lms_base}/api/lti_consumer/v1/lti/{lti_config_id}".format(
+        lms_base=get_lms_base(),
+        lti_config_id=str(lti_config_id),
+    )
+
+    if extra_path:
+        link = '/'.join([link, extra_path])
+
+    return link
+
+
+def get_lms_lti_keyset_link(lti_config_id):
     """
     Returns an LMS link to LTI public keyset endpoint
 
-    :param location: the location of the block
+    :param lti_config_id: LTI configuration id
     """
-    return "{lms_base}/api/lti_consumer/v1/lti/{lti_config_id}/public_keysets/".format(
-        lms_base=get_lms_base(),
-        lti_config_id=str(lti_configuration.id),
-    )
+    return get_lms_lti_link(lti_config_id, extra_path='public_keysets')
 
 
-def get_lms_lti_launch_link(lti_configuration):
+def get_lms_lti_launch_link(lti_config_id):
     """
     Returns an LMS link to LTI Launch endpoint
 
-    :param location: the location of the block
+    :param lti_config_id: LTI configuration id
     """
-    return "{lms_base}/api/lti_consumer/v1/lti/{lti_config_id}/launch/".format(
-        lms_base=get_lms_base(),
-        lti_config_id=str(lti_configuration.id),
-    )
+    return get_lms_lti_link(lti_config_id, extra_path='launch')
 
 
-def get_lms_lti_access_token_link(lti_configuration):
+def get_lms_lti_oidc_link(lti_config_id):
+    """
+    Returns an LMS link to LTI OIDC Preflight endpoint
+
+    :param lti_config_id: LTI configuration id
+    """
+    return get_lms_lti_link(lti_config_id, extra_path='oidc')
+
+
+def get_lms_lti_access_token_link(lti_config_id):
     """
     Returns an LMS link to LTI Launch endpoint
 
-    :param location: the location of the block
+    :param lti_config_id: LTI configuration id
     """
-    return "{lms_base}/api/lti_consumer/v1/lti/{lti_config_id}/token/".format(
-        lms_base=get_lms_base(),
-        lti_config_id=str(lti_configuration.id),
-    )
+    return get_lms_lti_link(lti_config_id, extra_path='token')
 
 
 def get_lti_ags_lineitems_url(lti_config_id):
@@ -73,7 +85,4 @@ def get_lti_ags_lineitems_url(lti_config_id):
 
     :param lti_config_id: LTI configuration id
     """
-    return "{lms_base}/api/lti_consumer/v1/lti/{lti_config_id}/lti-ags".format(
-        lms_base=get_lms_base(),
-        lti_config_id=str(lti_config_id),
-    )
+    return get_lms_lti_link(lti_config_id, extra_path='lti-ags')

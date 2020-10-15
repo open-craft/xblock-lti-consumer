@@ -1,6 +1,8 @@
 """
 LTI consumer plugin passthrough views
 """
+from django.utils.decorators import method_decorator
+from django.views.decorators.clickjacking import xframe_options_exempt
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_http_methods
 from django_filters.rest_framework import DjangoFilterBackend
@@ -143,7 +145,105 @@ class LtiAgsLineItemViewset(viewsets.ModelViewSet):
         serializer.save(lti_configuration=lti_configuration)
 
 
-class PublicKeySetView(viewsets.ViewSet):
+@method_decorator(xframe_options_exempt, name='list')
+class LaunchGateViewSet(viewsets.ViewSet):
+    """
+    API endpoint for launching the LTI 1.3 tool.
+
+    This endpoint is only valid when a LTI 1.3 tool is being used.
+
+    Returns:
+        webob.response: HTML LTI launch form or error page if misconfigured
+    """
+
+    # Handles GET requests with no suffix
+    def list(self, request, *args, **kwargs):
+        return self._handle_request(request, *args, **kwargs)
+
+    def _handle_request(self, request, *args, **kwargs):
+        lti_config = request.lti_configuration
+        if lti_config.version != LtiConfiguration.LTI_1P3:
+            return Response(status=404)
+
+        xblock = lti_config.block
+        usage_key = lti_config.location
+
+        loader = ResourceLoader(__name__)
+        context = {}
+
+        lti_consumer = lti_config.get_lti_consumer()
+
+        try:
+            # Pass user data
+            lti_consumer.set_user_data(
+                user_id=xblock.external_user_id,
+                # Pass django user role to library
+                role=xblock.runtime.get_user_role()
+            )
+
+            # Set launch context
+            # Hardcoded for now, but we need to translate from
+            # self.launch_target to one of the LTI compliant names,
+            # either `iframe`, `frame` or `window`
+            # This is optional though
+            lti_consumer.set_launch_presentation_claim('iframe')
+
+            # Set context claim
+            # This is optional
+            context_title = " - ".join([
+                xblock.course.display_name_with_default,
+                xblock.course.display_org_with_default
+            ])
+            lti_consumer.set_context_claim(
+                xblock.context_id,
+                context_types=[LTI_1P3_CONTEXT_TYPE.course_offering],
+                context_title=context_title,
+                context_label=xblock.context_id
+            )
+
+            context.update({
+                "preflight_response": dict(request.GET),
+                "launch_request": lti_consumer.generate_launch_request(
+                    resource_link=str(usage_key),  # pylint: disable=no-member
+                    preflight_response=dict(request.GET)
+                )
+            })
+
+            context.update({'launch_url': xblock.lti_1p3_launch_url})
+            template = loader.render_mako_template('/templates/html/lti_1p3_launch.html', context)
+            return Response(template, content_type='text/html')
+        except Lti1p3Exception:
+            template = loader.render_mako_template('/templates/html/lti_1p3_launch_error.html', context)
+            return Response(template, status=400, content_type='text/html')
+        except Exception:  # pylint: disable=broad-except
+            return Response(status=404)
+
+
+@method_decorator(xframe_options_exempt, name='list')
+class OIDCViewSet(viewsets.ViewSet):
+    """
+    API endpoint to initiate an OIDC Preflight Request for an LTI1.3 Launch
+
+    This endpoint is only valid when a LTI 1.3 tool is being used.
+    """
+    def list(self, request, *args, **kwargs):
+        lti_config = request.lti_configuration
+        if lti_config.version != LtiConfiguration.LTI_1P3:
+            return Response(status=404)
+
+        lti_consumer = lti_config.get_lti_consumer()
+        context = lti_consumer.prepare_preflight_url(
+            callback_url=get_lms_lti_launch_link(lti_config.id),
+            hint=str(lti_config.location),
+            lti_hint=str(lti_config.location)
+        )
+
+        loader = ResourceLoader(__name__)
+        template = loader.render_mako_template('/templates/html/lti_1p3_oidc.html', context)
+        return Response(template, content_type='text/html')
+
+
+class PublicKeySetViewSet(viewsets.ViewSet):
     """
     API endpoint to retrieve public keys sets for an LtiConfiguration
 
@@ -162,94 +262,8 @@ class PublicKeySetView(viewsets.ViewSet):
         )
 
 
-class LaunchGateViewSet(viewsets.ViewSet):
-    """
-    API endpoint for launching the LTI 1.3 tool.
-
-    This endpoint is only valid when a LTI 1.3 tool is being used.
-
-    Returns:
-        webob.response: HTML LTI launch form or error page if misconfigured
-    """
-
-    # Handles GET requests with no suffix
-    def list(self, request, *args, **kwargs):
-        return self._handle_request(request, *args, **kwargs)
-
-    # Handles POST requests with no suffix
-    def create(self, request, *args, **kwargs):
-        return self._handle_request(request, *args, **kwargs)
-
-    # Handles GET and POST requests with suffix
-    @action(
-        detail=False,
-        methods=['GET', 'POST'],
-        url_path='(?P<suffix>[^/.]+?'
-    )
-    def suffix(self, request, suffix, *args, **kwargs):
-        return self._handle_request(request, *args, suffix=suffix, **kwargs)
-
-    def _handle_request(self, request, *args, **kwargs):
-        lti_config = request.lti_configuration
-        if lti_config.version != LtiConfiguration.LTI_1P3:
-            return Response(status=404)
-
-        try:
-            xblock = lti_config.block
-            usage_key = lti_config.location
-
-            loader = ResourceLoader(__name__)
-            context = {}
-
-            lti_consumer = lti_config.get_lti_consumer()
-
-            try:
-                # Pass user data
-                lti_consumer.set_user_data(
-                    user_id=xblock.external_user_id,
-                    # Pass django user role to library
-                    role=xblock.runtime.get_user_role()
-                )
-
-                # Set launch context
-                # Hardcoded for now, but we need to translate from
-                # self.launch_target to one of the LTI compliant names,
-                # either `iframe`, `frame` or `window`
-                # This is optional though
-                lti_consumer.set_launch_presentation_claim('iframe')
-
-                # Set context claim
-                # This is optional
-                context_title = " - ".join([
-                    xblock.course.display_name_with_default,
-                    xblock.course.display_org_with_default
-                ])
-                lti_consumer.set_context_claim(
-                    xblock.context_id,
-                    context_types=[LTI_1P3_CONTEXT_TYPE.course_offering],
-                    context_title=context_title,
-                    context_label=xblock.context_id
-                )
-
-                context.update({
-                    "preflight_response": dict(request.GET),
-                    "launch_request": lti_consumer.generate_launch_request(
-                        resource_link=str(usage_key),  # pylint: disable=no-member
-                        preflight_response=dict(request.GET)
-                    )
-                })
-
-                context.update({'launch_url': xblock.lti_1p3_launch_url})
-                template = loader.render_mako_template('/templates/html/lti_1p3_launch.html', context)
-                return Response(template, content_type='text/html')
-            except Lti1p3Exception:
-                template = loader.render_mako_template('/templates/html/lti_1p3_launch_error.html', context)
-                return Response(template, status=400, content_type='text/html')
-        except Exception:  # pylint: disable=broad-except
-            return Response(status=404)
-
-
-class TokenView(viewsets.ViewSet):
+@method_decorator(csrf_exempt, name='create')
+class TokenViewSet(viewsets.ViewSet):
     """
     API endpoint to create access tokens for the LTI 1.3 tool.
 
