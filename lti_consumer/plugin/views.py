@@ -1,6 +1,7 @@
 """
 LTI consumer plugin passthrough views
 """
+from django.http import HttpResponse
 from django.utils.decorators import method_decorator
 from django.views.decorators.clickjacking import xframe_options_exempt
 from django.views.decorators.csrf import csrf_exempt
@@ -9,8 +10,8 @@ from django_filters.rest_framework import DjangoFilterBackend
 from opaque_keys.edx.keys import UsageKey
 from rest_framework import viewsets
 from rest_framework.decorators import action
+from rest_framework.response import Response
 import urllib.parse
-from webob import Response
 
 from lti_consumer.models import LtiConfiguration, LtiAgsLineItem
 from lti_consumer.lti_1p3.exceptions import (
@@ -52,7 +53,7 @@ def public_keyset_endpoint(request, usage_id=None):
             handler='public_keyset_endpoint'
         )
     except Exception:  # pylint: disable=broad-except
-        return Response(status=404)
+        return HttpResponse(status=404)
 
 
 @require_http_methods(["GET", "POST"])
@@ -77,7 +78,7 @@ def launch_gate_endpoint(request, suffix):
             suffix=suffix
         )
     except Exception:  # pylint: disable=broad-except
-        return Response(status=404)
+        return HttpResponse(status=404)
 
 
 @csrf_exempt
@@ -96,27 +97,10 @@ def access_token_endpoint(request, usage_id=None):
             handler='lti_1p3_access_token'
         )
     except Exception:  # pylint: disable=broad-except
-        return Response(status=404)
+        return HttpResponse(status=404)
 
 
-class Lti1p3ApiViewSet(viewsets.ModelViewSet):
-
-    authentication_classes = [Lti1p3ApiAuthentication]
-
-    def get_queryset(self):
-        lti_configuration = self.request.lti_configuration
-
-        # Return all LineItems related to the LTI configuration.
-        # TODO:
-        # Note that each configuration currently maps 1:1
-        # to each resource link (block), and this filter needs
-        # improved once we start reusing LTI configurations.
-        return LtiAgsLineItem.objects.filter(
-            lti_configuration=lti_configuration
-        )
-
-
-class LtiAgsLineItemViewSet(Lti1p3ApiViewSet):
+class LtiAgsLineItemViewSet(viewsets.ModelViewSet):
     """
     LineItem endpoint implementation from LTI Advantage.
 
@@ -127,6 +111,7 @@ class LtiAgsLineItemViewSet(Lti1p3ApiViewSet):
     pagination_class = None
 
     # Custom permission classes for LTI APIs
+    authentication_classes = [Lti1p3ApiAuthentication]
     permission_classes = [LtiAgsPermissions]
 
     # Renderer/parser classes to accept LTI AGS content types
@@ -144,9 +129,27 @@ class LtiAgsLineItemViewSet(Lti1p3ApiViewSet):
         'tag'
     ]
 
+    def get_queryset(self):
+        lti_configuration = self.request.lti_configuration
+
+        # Return all LineItems related to the LTI configuration.
+        # TODO:
+        # Note that each configuration currently maps 1:1
+        # to each resource link (block), and this filter needs
+        # improved once we start reusing LTI configurations.
+        return LtiAgsLineItem.objects.filter(
+            lti_configuration=lti_configuration
+        )
+
     def perform_create(self, serializer):
         lti_configuration = self.request.lti_configuration
         serializer.save(lti_configuration=lti_configuration)
+
+
+class Lti1p3ApiViewSet(viewsets.ViewSet):
+
+    def _get_lti_config(self, lti_config_id):
+        return LtiConfiguration.objects.get(pk=lti_config_id)
 
 
 @method_decorator(xframe_options_exempt, name='list')
@@ -160,12 +163,14 @@ class LaunchGateViewSet(Lti1p3ApiViewSet):
         webob.response: HTML LTI launch form or error page if misconfigured
     """
 
+    authentication_classes = [Lti1p3ApiAuthentication]
+
     # Handles GET requests with no suffix
     def list(self, request, *args, **kwargs):
         return self._handle_request(request, *args, **kwargs)
 
-    def _handle_request(self, request, *args, **kwargs):
-        lti_config = request.lti_configuration
+    def _handle_request(self, request, *args, lti_config_id, **kwargs):
+        lti_config = self._get_lti_config(lti_config_id)
         if lti_config.version != LtiConfiguration.LTI_1P3:
             return Response(status=404)
 
@@ -230,8 +235,11 @@ class OIDCViewSet(Lti1p3ApiViewSet):
 
     This endpoint is only valid when a LTI 1.3 tool is being used.
     """
-    def list(self, request, *args, **kwargs):
-        lti_config = request.lti_configuration
+
+    authentication_classes = [Lti1p3ApiAuthentication]
+
+    def list(self, request, *args, lti_config_id, **kwargs):
+        lti_config = self._get_lti_config(lti_config_id)
         if lti_config.version != LtiConfiguration.LTI_1P3:
             return Response(status=404)
 
@@ -254,13 +262,13 @@ class PublicKeySetViewSet(Lti1p3ApiViewSet):
     This endpoint is only valid when a LTI 1.3 tool is being used.
     """
 
-    def list(self, request, *args, **kwargs):
-        lti_config = request.lti_configuration
+    def list(self, request, *args, lti_config_id, **kwargs):
+        lti_config = self._get_lti_config(lti_config_id)
         if lti_config.version != LtiConfiguration.LTI_1P3:
             return Response(status=404)
 
         return Response(
-            json_body=lti_config.get_lti_consumer().get_public_keyset(),
+            lti_config.get_lti_consumer().get_public_keyset(),
             content_type='application/json',
             content_disposition='attachment; filename=keyset.json'
         )
@@ -283,8 +291,8 @@ class TokenViewSet(Lti1p3ApiViewSet):
         Failure: https://tools.ietf.org/html/rfc6749#section-5.2
     """
 
-    def create(self, request, *args, **kwargs):
-        lti_config = request.lti_configuration
+    def create(self, request, *args, lti_config_id, **kwargs):
+        lti_config = self._get_lti_config(lti_config_id)
         if lti_config.version != LtiConfiguration.LTI_1P3:
             return Response(status=404)
 
@@ -298,7 +306,7 @@ class TokenViewSet(Lti1p3ApiViewSet):
             )
             # The returned `token` is compliant with RFC 6749 so we just
             # need to return a 200 OK response with the token as Json body
-            return Response(json_body=token, content_type="application/json")
+            return Response(token, content_type="application/json")
 
         # Handle errors and return a proper response
         except MissingRequiredClaim:

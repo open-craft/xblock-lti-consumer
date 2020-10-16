@@ -69,7 +69,6 @@ from xblock.validation import ValidationMessage
 from xblockutils.resources import ResourceLoader
 from xblockutils.studio_editable import StudioEditableXBlockMixin
 
-from .api import get_lti_config_id
 from .exceptions import LtiError
 from .lti_1p1.consumer import LtiConsumer1p1, parse_result_json, LTI_PARAMETERS
 from .lti_1p1.oauth import log_authorization_header
@@ -927,6 +926,7 @@ class LtiConsumerXBlock(StudioEditableXBlockMixin, XBlock):
         if self.lti_version == "lti_1p1":
             return self.student_view(context)
 
+        from .api import get_lti_config_id
         lti_config_id = get_lti_config_id(self.lti_version, self.location)  # pylint: disable=no-member
 
         fragment = Fragment()
@@ -1038,6 +1038,8 @@ class LtiConsumerXBlock(StudioEditableXBlockMixin, XBlock):
             webob.response: HTML LTI launch form
         """
         lti_consumer = self._get_lti_consumer()
+
+        from .api import get_lti_config_id
         lti_config_id = get_lti_config_id(self.lti_version, self.location)  # pylint: disable=no-member
 
         context = lti_consumer.prepare_preflight_url(
@@ -1067,6 +1069,8 @@ class LtiConsumerXBlock(StudioEditableXBlockMixin, XBlock):
         context = {}
 
         lti_consumer = self._get_lti_consumer()
+
+        from .api import get_lti_config_id
         lti_config_id = get_lti_config_id(self.lti_version, self.location)  # pylint: disable=no-member
 
         try:
@@ -1412,7 +1416,8 @@ class LtiConsumerXBlock(StudioEditableXBlockMixin, XBlock):
         allowed_attributes = dict(bleach.sanitizer.ALLOWED_ATTRIBUTES, **{'img': ['src', 'alt']})
         sanitized_comment = bleach.clean(self.score_comment, tags=allowed_tags, attributes=allowed_attributes)
 
-        #
+
+        from .api import get_lti_config_id
         lti_config_id = get_lti_config_id(self.lti_version, self.location)  # pylint: disable=no-member
 
         # Set launch handler depending on LTI version
