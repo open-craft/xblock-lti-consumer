@@ -152,9 +152,6 @@ class LtiConfiguration(models.Model):
     def __str__(self):
         return "[{}] {} - {}".format(self.config_store, self.version, self.location)
 
-    class Meta:
-        app_label = 'lti_consumer'
-
 
 class LtiAgsLineItem(models.Model):
     """
@@ -207,6 +204,3 @@ class LtiAgsLineItem(models.Model):
             self.resource_link_id,
             self.label,
         )
-
-    class Meta:
-        app_label = 'lti_consumer'

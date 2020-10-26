@@ -12,8 +12,13 @@ from rest_framework import viewsets
 from rest_framework.decorators import action
 from rest_framework.response import Response
 import urllib.parse
+from xblockutils.resources import ResourceLoader
 
 from lti_consumer.models import LtiConfiguration, LtiAgsLineItem
+from lti_consumer.utils import (
+    get_lms_lti_launch_link,
+    get_lms_lti_oidc_callback_link,
+)
 from lti_consumer.lti_1p3.exceptions import (
     Lti1p3Exception,
     UnsupportedGrantType,
@@ -218,11 +223,11 @@ class LaunchGateViewSet(Lti1p3ApiViewSet):
                 )
             })
 
-            context.update({'launch_url': get_lms_lti_launch_link(lti_config.id)})
-            template = loader.render_mako_template('/templates/html/lti_1p3_launch.html', context)
+            context.update({'launch_url': get_lms_lti_launch_link(lti_config_id)})
+            template = loader.render_mako_template('../templates/html/lti_1p3_launch.html', context)
             return Response(template, content_type='text/html')
         except Lti1p3Exception:
-            template = loader.render_mako_template('/templates/html/lti_1p3_launch_error.html', context)
+            template = loader.render_mako_template('../templates/html/lti_1p3_launch_error.html', context)
             return Response(template, status=400, content_type='text/html')
         except Exception:  # pylint: disable=broad-except
             return Response(status=404)
@@ -245,13 +250,13 @@ class OIDCViewSet(Lti1p3ApiViewSet):
 
         lti_consumer = lti_config.get_lti_consumer()
         context = lti_consumer.prepare_preflight_url(
-            callback_url=get_lms_lti_oidc_callback_link(lti_config.id),
+            callback_url=get_lms_lti_oidc_callback_link(lti_config_id),
             hint=str(lti_config.location),
             lti_hint=str(lti_config.location)
         )
 
         loader = ResourceLoader(__name__)
-        template = loader.render_mako_template('/templates/html/lti_1p3_oidc.html', context)
+        template = loader.render_mako_template('../templates/html/lti_1p3_oidc.html', context)
         return Response(template, content_type='text/html')
 
 
@@ -270,7 +275,7 @@ class PublicKeySetViewSet(Lti1p3ApiViewSet):
         return Response(
             lti_config.get_lti_consumer().get_public_keyset(),
             content_type='application/json',
-            content_disposition='attachment; filename=keyset.json'
+            headers={'Content-Disposition': 'attachment; filename=keyset.json'}
         )
 
 
@@ -312,24 +317,24 @@ class TokenViewSet(Lti1p3ApiViewSet):
         except MissingRequiredClaim:
             # Missing request attibutes
             return Response(
-                json_body={"error": "invalid_request"},
+                {"error": "invalid_request"},
                 status=400
             )
         except (MalformedJwtToken, TokenSignatureExpired):
             # Triggered when a invalid grant token is used
             return Response(
-                json_body={"error": "invalid_grant"},
+                {"error": "invalid_grant"},
                 status=400,
             )
         except (NoSuitableKeys, UnknownClientId):
             # Client ID is not registered in the block or
             # isn't possible to validate token using available keys.
             return Response(
-                json_body={"error": "invalid_client"},
+                {"error": "invalid_client"},
                 status=400,
             )
         except UnsupportedGrantType:
             return Response(
-                json_body={"error": "unsupported_grant_type"},
+                {"error": "unsupported_grant_type"},
                 status=400,
             )
