@@ -9,7 +9,7 @@ from Cryptodome.PublicKey import RSA
 from django.test.testcases import TestCase
 
 from lti_consumer.lti_1p3.consumer import LtiConsumer1p3
-from lti_consumer.lti_1p3.extensions.rest_framework.permissions import LtiAgsPermissions
+from lti_consumer.lti_1p3.extensions.rest_framework.permissions import LtiAgsPermissions, LtiNrpsPermissions
 from lti_consumer.models import LtiConfiguration
 
 # Variables required for testing and verification
@@ -240,6 +240,32 @@ class TestLtiAuthentication(TestCase):
 
         # Test scores view
         mock_view.action = 'scores'
+        self.assertEqual(
+            perm_class.has_permission(self.mock_request, mock_view),
+            is_allowed,
+        )
+
+    @ddt.data(
+        (["https://purl.imsglobal.org/spec/lti-nrps/scope/contextmembership.readonly"], True),
+        ([], False),
+    )
+    @ddt.unpack
+    def test_nrps_membership_permissions(self, token_scopes, is_allowed):
+        """
+        Test if LTI NRPS Context membership endpoint is availabe for correct token.
+        """
+        perm_class = LtiNrpsPermissions()
+
+        mock_view = MagicMock()
+
+        # Make token and include it in the mock request
+        token = self._make_token(token_scopes)
+        self.mock_request.headers = {
+            "Authorization": "Bearer {}".format(token)
+        }
+
+        # Test scores view
+        mock_view.action = 'list'
         self.assertEqual(
             perm_class.has_permission(self.mock_request, mock_view),
             is_allowed,
