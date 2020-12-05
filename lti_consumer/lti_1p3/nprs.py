@@ -30,7 +30,7 @@ class LtiNrps:
             'https://purl.imsglobal.org/spec/lti-nrps/scope/contextmembership.readonly'
         ]
 
-    def get_lti_ags_launch_claim(self):
+    def get_lti_nrps_launch_claim(self):
         """
         Returns LTI NRPS Claim to be injected in the LTI launch message.
         """
