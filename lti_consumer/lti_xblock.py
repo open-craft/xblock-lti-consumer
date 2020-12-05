@@ -300,6 +300,14 @@ class LtiConsumerXBlock(StudioEditableXBlockMixin, XBlock):
             "Basic Outcomes requests.</b>"
         ),
     )
+
+    lti_1p3_enable_nrps = Boolean(
+        display_name=_("Enable LTI NRPS"),
+        help=_("Enable LTI Names and Role Provisioning Services."),
+        default=False,
+        scope=Scope.settings
+    )
+
     # DEPRECATED - These variables were moved to the LtiConfiguration Model
     lti_1p3_client_id = String(
         display_name=_("LTI 1.3 Block Client ID - DEPRECATED"),
@@ -497,7 +505,7 @@ class LtiConsumerXBlock(StudioEditableXBlockMixin, XBlock):
     editable_field_names = (
         'display_name', 'description',
         # LTI 1.3 variables
-        'lti_version', 'lti_1p3_launch_url', 'lti_1p3_oidc_url', 'lti_1p3_tool_public_key',
+        'lti_version', 'lti_1p3_launch_url', 'lti_1p3_oidc_url', 'lti_1p3_tool_public_key', 'lti_1p3_enable_nrps',
         # LTI Advantage variables
         'lti_advantage_deep_linking_enabled', 'lti_advantage_deep_linking_launch_url',
         # LTI 1.1 variables
