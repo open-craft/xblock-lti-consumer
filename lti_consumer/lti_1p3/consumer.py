@@ -655,4 +655,4 @@ class LtiAdvantageConsumer(LtiConsumer1p3):
         self.nrps = LtiNrps(context_memberships_url)
 
         # Include LTI NRPS claim inside the LTI Launch message
-        self.set_extra_claim(self.nrps.get_lti_ags_launch_claim())
+        self.set_extra_claim(self.nrps.get_lti_nrps_launch_claim())
