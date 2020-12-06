@@ -30,26 +30,25 @@ from lti_consumer.lti_1p3.extensions.rest_framework.serializers import (
     LtiAgsLineItemSerializer,
     LtiAgsScoreSerializer,
     LtiAgsResultSerializer,
+    LtiNrpsContextMembershipSerializer,
 )
-from lti_consumer.lti_1p3.extensions.rest_framework.permissions import LtiAgsPermissions
+from lti_consumer.lti_1p3.extensions.rest_framework.permissions import (
+    LtiAgsPermissions,
+    LtiNrpsPermissions,
+)
 from lti_consumer.lti_1p3.extensions.rest_framework.authentication import Lti1p3ApiAuthentication
 from lti_consumer.lti_1p3.extensions.rest_framework.renderers import (
     LineItemsRenderer,
     LineItemRenderer,
     LineItemScoreRenderer,
-    LineItemResultsRenderer
+    LineItemResultsRenderer,
+    MembershipResultRenderer,
 )
 from lti_consumer.lti_1p3.extensions.rest_framework.parsers import (
     LineItemParser,
     LineItemScoreParser,
 )
-from lti_consumer.plugin.compat import (
-    run_xblock_handler,
-    run_xblock_handler_noauth,
-    get_course_by_id,
-    user_course_access,
-    user_has_access,
-)
+from lti_consumer.plugin import compat
 from lti_consumer.utils import _
 
 
@@ -60,7 +59,7 @@ def user_has_staff_access(user, course_key):
     """
     Check if an user has write permissions to a given course.
     """
-    return user_has_access(user, "staff", course_key)
+    return compat.user_has_access(user, "staff", course_key)
 
 
 def has_block_access(user, block, course_key):
@@ -80,13 +79,13 @@ def has_block_access(user, block, course_key):
         bool: True if user has access, False otherwise.
     """
     # Get the course
-    course = get_course_by_id(course_key)
+    course = compat.get_course_by_id(course_key)
 
     # Check if user is authenticated & enrolled
-    course_access = user_course_access(course, user, 'load', check_if_enrolled=True, check_if_authenticated=True)
+    course_access = compat.user_course_access(course, user, 'load', check_if_enrolled=True, check_if_authenticated=True)
 
     # Check if user has access to xblock
-    block_access = user_has_access(user, 'load', block, course_key)
+    block_access = compat.user_has_access(user, 'load', block, course_key)
 
     # Return True if the user has access to xblock and is enrolled in that specific course.
     return course_access and block_access
@@ -135,7 +134,7 @@ def launch_gate_endpoint(request, suffix):
         usage_key_str = request.GET.get('login_hint')
         usage_key = UsageKey.from_string(usage_key_str)
 
-        return run_xblock_handler(
+        return compat.run_xblock_handler(
             request=request,
             course_id=str(usage_key.course_key),
             usage_id=str(usage_key),
@@ -156,7 +155,7 @@ def access_token_endpoint(request, usage_id=None):
     try:
         usage_key = UsageKey.from_string(usage_id)
 
-        return run_xblock_handler_noauth(
+        return compat.run_xblock_handler_noauth(
             request=request,
             course_id=str(usage_key.course_key),
             usage_id=str(usage_key),
@@ -415,3 +414,68 @@ class LtiAgsLineItemViewset(viewsets.ModelViewSet):
             status=status.HTTP_201_CREATED,
             headers=headers
         )
+
+
+class LtiNrpsViewSet(viewsets.ViewSet):
+    """
+    Api Endpoints for LTI NPRS Services
+    """
+    serializer_class = LtiNrpsContextMembershipSerializer
+    pagination_class = None
+
+    # Custom permission classes for LTI APIs
+    authentication_classes = [Lti1p3ApiAuthentication]
+    permission_classes = [LtiNrpsPermissions]
+
+    # Renderer classes to accept LTI NRPS content types
+    renderer_classes = [
+        MembershipResultRenderer,
+    ]
+
+    @action(methods=['GET'], detail=False, url_path='memberships')
+    def memberships(self, request, *args, **kwargs):
+        """
+        LTI NRPS Context Membership service endpoint.
+
+        See full API spec on -
+        https://www.imsglobal.org/spec/lti-nrps/v2p0#context-membership
+        """
+        course_key = request.lti_configuration.location.course_key
+
+        # get all course enrollments
+        enrollments = compat.get_user_enrollments(course_key)
+        enrolled_users = [enrol.user for enrol in enrollments]
+
+        # get user profiles in bulk
+        user_profiles = compat.get_user_profiles(enrolled_users)
+
+        # get external ids in bulk
+        user_eids = compat.get_external_ids(enrolled_users)
+
+        # create user id to profile & external id mapping for easier access
+        profile_mapping = {profile.user.id: profile for profile in user_profiles}
+        external_id_mapping = {eid.user.id: eid for eid in user_eids}
+
+        # create members list
+        members = []
+        for user in enrolled_users:
+            members.append({
+                'user_id': external_id_mapping[user.id].external_user_id,
+                'username': user.username,
+                'name': profile_mapping[user.id].name
+            })
+
+        # prepare result
+        result = {
+            'context': {
+                'id': course_key
+            },
+            'members': members,
+        }
+
+        serializer = LtiNrpsContextMembershipSerializer(
+            result,
+            context={'request': self.request},
+        )
+
+        return Response(serializer.data)

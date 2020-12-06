@@ -8,6 +8,7 @@ from opaque_keys import InvalidKeyError
 from opaque_keys.edx.keys import UsageKey
 
 from lti_consumer.models import LtiAgsLineItem, LtiAgsScore
+from lti_consumer.lti_1p3.constants import LTI_1P3_ROLE_MAP
 
 
 class UsageKeyField(serializers.Field):
@@ -374,3 +375,44 @@ class LtiDlImageSerializer(serializers.Serializer):
     thumbnail = LtiDLIconPropertySerializer(required=False)
     width = serializers.IntegerField(min_value=1, required=False)
     height = serializers.IntegerField(min_value=1, required=False)
+
+
+# pylint: disable=abstract-method
+class LtiNrpsContextMemberSerializer(serializers.Serializer):
+    """
+    Serializer for a LTI NRPS Context Member
+    """
+    user_id = serializers.UUIDField()
+    username = serializers.CharField()
+    roles = serializers.SerializerMethodField()
+
+    def get_roles(self, _):
+        return LTI_1P3_ROLE_MAP['student']
+
+
+# pylint: disable=abstract-method
+class LtiNrpsContextSerializer(serializers.Serializer):
+    """
+    Serializer for a LTI NRPS Context
+    """
+    id = UsageKeyField()
+
+
+# pylint: disable=abstract-method
+class LtiNrpsContextMembershipSerializer(serializers.Serializer):
+    """
+    Serializer for a LTI NRPS Context Memberships
+    """
+    id = serializers.SerializerMethodField()
+    context = LtiNrpsContextSerializer()
+    members = LtiNrpsContextMemberSerializer(many=True)
+
+    def get_id(self, _):
+        request = self.context.get('request')  # pylint: disable=no-member
+        return reverse(
+            'lti_consumer:lti-nrps-view-memberships',
+            kwargs={
+                'lti_config_id': request.lti_configuration.id,
+            },
+            request=request,
+        )

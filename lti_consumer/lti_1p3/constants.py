@@ -49,6 +49,9 @@ LTI_1P3_ACCESS_TOKEN_SCOPES = [
     'https://purl.imsglobal.org/spec/lti-ags/scope/lineitem',
     'https://purl.imsglobal.org/spec/lti-ags/scope/result.readonly',
     'https://purl.imsglobal.org/spec/lti-ags/scope/score',
+
+    # LTI-NRPS Scopes
+    'https://purl.imsglobal.org/spec/lti-nrps/scope/contextmembership.readonly',
 ]
 
 

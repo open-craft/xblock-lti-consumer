@@ -265,7 +265,7 @@ class TestLtiAuthentication(TestCase):
         }
 
         # Test scores view
-        mock_view.action = 'list'
+        mock_view.action = 'memberships'
         self.assertEqual(
             perm_class.has_permission(self.mock_request, mock_view),
             is_allowed,

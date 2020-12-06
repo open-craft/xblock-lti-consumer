@@ -111,7 +111,7 @@ def get_lti_nrps_context_membership_url(lti_config_id):
     :param lti_config_id: LTI Configuration ID
     """
 
-    return "{lms_base}/api/lti_consumer/v1/lti/{lti_config_id}/lti-nrps/membership".format(
+    return "{lms_base}/api/lti_consumer/v1/lti/{lti_config_id}/lti-nrps/memberships".format(
         lms_base=get_lms_base(),
         lti_config_id=str(lti_config_id),
     )

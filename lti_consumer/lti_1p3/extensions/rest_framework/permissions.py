@@ -28,7 +28,7 @@ class LTIBasePermissions(permissions.BasePermission):
 
         return False
 
-    def get_permission_scopes(request, view):
+    def get_permission_scopes(self, request, view):
         """
         This method should be overriden by child classes to return
         a list of allowed scopes.
@@ -94,7 +94,7 @@ class LtiNrpsPermissions(LTIBasePermissions):
         """
         scopes = []
 
-        if view.action in ['list', 'retrieve']:
+        if view.action == 'memberships':
             scopes = [
                 'https://purl.imsglobal.org/spec/lti-nrps/scope/contextmembership.readonly'
             ]
