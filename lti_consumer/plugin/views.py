@@ -450,7 +450,7 @@ class LtiNrpsViewSet(mixins.ListModelMixin, viewsets.GenericViewSet):
         """
         Given a course key return a list of enrollments.
         """
-        # pylint: disable=import-error,import-outside-toplevel
+        # pylint: disable=import-error,import-outside-toplevel,no-name-in-module
         from common.djangoapps.student.models import CourseAccessRole
 
         course_key = self.request.lti_configuration.location.course_key
@@ -485,7 +485,8 @@ class LtiNrpsViewSet(mixins.ListModelMixin, viewsets.GenericViewSet):
                 )
         else:
             queryset = queryset.filter(
-                Q(courseenrollment__course_id=course_key, courseenrollment__is_active=True)|Q(courseaccessrole__course_id=course_key)
+                Q(courseenrollment__course_id=course_key, courseenrollment__is_active=True) |
+                Q(courseaccessrole__course_id=course_key)
             )
 
         # distinct prevents duplicates when matching on many to many relation
@@ -517,7 +518,7 @@ class LtiNrpsViewSet(mixins.ListModelMixin, viewsets.GenericViewSet):
                 for context_role in context_roles:
                     # role can have full or simple version
                     # more - https://www.imsglobal.org/spec/lti-nrps/v2p0#role-query-parameter
-                    if context_role['simple'] == role_filter_param or context_role['role'] == role_filter_param:
+                    if role_filter_param in (context_role['simple'], context_role['role']):
                         role_filter = edx_role
                         break
 
