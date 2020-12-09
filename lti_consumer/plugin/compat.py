@@ -123,41 +123,19 @@ def user_course_access(*args, **kwargs):
     return check_course_access(*args, **kwargs)
 
 
-def get_user_enrollments(course_key):
+def get_user_readonly_serializer():
     """
-    Given a course key return a list of enrollments.
-    """
-    # pylint: disable=import-error,import-outside-toplevel
-    from openedx.core.djangoapps.enrollments import api
-    # pylint: disable=protected-access
-    return api._data_api().get_user_enrollments(course_key)
-
-
-def get_user_profiles(users):
-    """
-    Given a list of user, returns corresponding user profiles
+    Load UserReadOnlySerializer from user_api
     """
     # pylint: disable=import-error,import-outside-toplevel
-    from student.models import UserProfile
-    return UserProfile.objects.filter(user__in=users)
+    from openedx.core.djangoapps.user_api.accounts.serializers import UserReadOnlySerializer
+    return UserReadOnlySerializer
 
 
-def get_external_ids(users):
+def get_or_create_externalid(user):
     """
     Given a list of user, returns corresponding external id's
     """
     # pylint: disable=import-error,import-outside-toplevel
     from openedx.core.djangoapps.external_user_ids.models import ExternalId
-
-    # find existing external ids
-    eid_list = list(ExternalId.objects.filter(user__in=users, external_id_type__name='lti'))
-
-    # find users that don't have external ids yet
-    users_without_eid = set(users) - {eid.user for eid in eid_list}
-
-    # create external id for users that don't have it
-    for user in users_without_eid:
-        eid, _ = ExternalId.add_new_user_id(user, 'lti')
-        eid_list.append(eid)
-
-    return eid_list
+    return ExternalId.add_new_user_id(user, 'lti')
