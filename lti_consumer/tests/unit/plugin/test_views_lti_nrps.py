@@ -5,6 +5,7 @@ from mock import patch, PropertyMock, Mock
 from Cryptodome.PublicKey import RSA
 from jwkest.jwk import RSAKey
 from django.urls import reverse
+from django.utils.http import urlencode
 from rest_framework import serializers
 from rest_framework.test import APITransactionTestCase
 
@@ -242,8 +243,12 @@ class LtiNrpsViewSetTestCase(APITransactionTestCase):
         response = self.client.get('{}?role=Administrator'.format(self.context_membership_endpoint))
         self.assertEqual(
             response.data['id'],
-            'http://testserver/lti_consumer/v1/lti/{}/lti-nrps/memberships?page=1&role=Administrator'.format(
+            'http://testserver/lti_consumer/v1/lti/{}/lti-nrps/memberships?{}'.format(
                 self.lti_config.id,
+                urlencode({
+                    'page': 1,
+                    'role': 'Administrator'
+                })
             ),
         )
 
