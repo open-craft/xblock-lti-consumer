@@ -123,15 +123,6 @@ def user_course_access(*args, **kwargs):
     return check_course_access(*args, **kwargs)
 
 
-def get_user_readonly_serializer():
-    """
-    Load UserReadOnlySerializer from user_api
-    """
-    # pylint: disable=import-error,import-outside-toplevel
-    from openedx.core.djangoapps.user_api.accounts.serializers import UserReadOnlySerializer
-    return UserReadOnlySerializer
-
-
 def get_or_create_externalid(user):
     """
     Given a list of user, returns corresponding external id's
@@ -139,3 +130,21 @@ def get_or_create_externalid(user):
     # pylint: disable=import-error,import-outside-toplevel
     from openedx.core.djangoapps.external_user_ids.models import ExternalId
     return ExternalId.add_new_user_id(user, 'lti')
+
+
+def get_course_members(*args, **kwargs):
+    """
+    Return a User queryset containing all members of a course.
+    """
+    # pylint: disable=import-error,import-outside-toplevel
+    from lms.djangoapps.course_api.api import get_course_members as course_members_api
+    return course_members_api(*args, **kwargs)
+
+
+def get_user_profile_image(user):
+    """
+    Given an User instance return profile image urls.
+    """
+    # pylint: disable=import-error,import-outside-toplevel
+    from openedx.core.djangoapps.user_api.accounts.image_helpers import get_profile_image_urls_for_user
+    return get_profile_image_urls_for_user(user)
