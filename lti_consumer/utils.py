@@ -24,6 +24,13 @@ def lti_deeplinking_enabled():
     """
     return settings.FEATURES.get('LTI_DEEP_LINKING_ENABLED', False) is True  # pragma: no cover
 
+def expose_pii_fields():
+    """
+    Returns `true` if Use's PII fields can be exposed to LTI endpoints,
+    ex - LTI-NRPS Context Membership Endpoint.
+    """
+    return settings.FEATURES.get('LTI_EXPOSE_PII', False) is True  # pragma: no cover
+
 
 def get_lms_base():
     """
