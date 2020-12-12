@@ -10,6 +10,7 @@ from opaque_keys.edx.keys import UsageKey
 from lti_consumer.models import LtiAgsLineItem, LtiAgsScore
 from lti_consumer.lti_1p3.constants import LTI_1P3_CONTEXT_ROLE_MAP
 from lti_consumer.plugin import compat
+from lti_consumer.utils import expose_pii_fields
 
 
 class UsageKeyField(serializers.Field):
@@ -378,51 +379,64 @@ class LtiDlImageSerializer(serializers.Serializer):
     height = serializers.IntegerField(min_value=1, required=False)
 
 
-def create_lti_nrps_member_serializer():
+class LtiContextSerializer(serializers.Serializer):
     """
-    Extend UserReadOnlySerializer and return extended Serializer class
-    """
-    UserReadOnlySerializer = compat.get_user_readonly_serializer()
-
-    class ContextMemberSerializer(UserReadOnlySerializer):
-        """
-        Extend UserReadOnlySerializer to serialize User & User Profile information
-        """
-
-        def to_representation(self, user):
-            """
-            Override to_representation to add roles and user_id (external_id) accoding to
-            LTI NRPS Spec - https://www.imsglobal.org/spec/lti-nrps/v2p0#sharing-of-personal-data
-            """
-            result = super(ContextMemberSerializer, self).to_representation(user)
-
-            # prepare & set member roles
-            roles = []
-
-            if user.courseenrollment_set.count() > 0:
-                roles += [role['role'] for role in LTI_1P3_CONTEXT_ROLE_MAP['student']]
-
-            for accessrole in user.courseaccessrole_set.all():
-                if LTI_1P3_CONTEXT_ROLE_MAP.get(accessrole.role):
-                    roles += [role['role'] for role in LTI_1P3_CONTEXT_ROLE_MAP[accessrole.role]]
-
-            result['roles'] = set(roles)
-
-            # set user_id to external_user_id
-            externalid, _ = compat.get_or_create_externalid(user)
-            result['user_id'] = serializers.UUIDField().to_representation(externalid.external_user_id)
-
-            return result
-
-    return ContextMemberSerializer
-
-
-# pylint: disable=abstract-method
-class LtiNrpsContextSerializer(serializers.Serializer):
-    """
-    Serializer for a LTI NRPS Context
+    Serializer for a LTI Context
     """
     id = UsageKeyField()
+
+
+class LtiNrpsContextMemberBasicSerializer(serializers.Serializer):
+    """
+    Non PII fields serializer for Context Member.
+    """
+    status = serializers.SerializerMethodField()
+    user_id = serializers.SerializerMethodField()
+    roles = serializers.SerializerMethodField()
+
+    def get_user_id(self, user):
+        """
+        Get external user id for the user.
+        """
+        externalid, _ = compat.get_or_create_externalid(user)
+        return serializers.UUIDField().to_representation(externalid.external_user_id)
+
+    def get_status(self, user):
+        """
+        Get user status string value.
+        """
+        return 'Active' if user.is_active else 'Inactive'
+
+    def get_roles(self, user):
+        """
+        Prepare and return Context Roles for user.
+        """
+        roles = []
+        if user.courseenrollment_set.count() > 0:
+            roles += LTI_1P3_CONTEXT_ROLE_MAP['student']
+
+        for accessrole in user.courseaccessrole_set.all():
+            if LTI_1P3_CONTEXT_ROLE_MAP.get(accessrole.role):
+                roles += LTI_1P3_CONTEXT_ROLE_MAP[accessrole.role]
+
+        return set(roles)
+
+
+class LtiNrpsContextMemberPIISerializer(LtiNrpsContextMemberBasicSerializer):
+    """
+    Personally identifiable information serializer for Context Member.
+    """
+    name = serializers.CharField(source='profile.name', required=False)
+    picture = serializers.SerializerMethodField()
+    email = serializers.EmailField(required=False)
+
+    def get_picture(self, user):
+        """
+        Get absolute url of user's profile picture.
+        """
+        request = self.context['request']
+        picture_url = compat.get_user_profile_image(user)['medium']
+        return request.build_absolute_uri(picture_url)
 
 
 # pylint: disable=abstract-method
@@ -431,15 +445,21 @@ class LtiNrpsContextMembershipSerializer(serializers.Serializer):
     Serializer for a LTI NRPS Context Memberships
     """
     id = serializers.CharField()
-    context = LtiNrpsContextSerializer()
+    context = LtiContextSerializer()
     members = serializers.SerializerMethodField()
 
     def get_members(self, obj):
         """
-        Create & Use ContextMemberSerializer to serialize members
+        Use appropriate serializer to serialize members
         """
         members = obj.get('members', [])
-        request = self.context.get('request')  # pylint: disable=no-member
-        ContextMemberSerializer = create_lti_nrps_member_serializer()
-        serializer = ContextMemberSerializer(members, many=True, context={'request': request})
+
+        # Check if PII fields can be exposed
+        if expose_pii_fields():
+            serializer_cls = LtiNrpsContextMemberPIISerializer
+        else:
+            serializer_cls = LtiNrpsContextMemberBasicSerializer
+
+        serializer = serializer_cls(members, many=True, context=self.context)
+
         return serializer.data
