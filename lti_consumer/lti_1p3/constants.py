@@ -38,26 +38,13 @@ LTI_1P3_ROLE_MAP = {
 # https://www.imsglobal.org/spec/lti/v1p3/#lis-vocabulary-for-context-roles
 LTI_1P3_CONTEXT_ROLE_MAP = {
     'staff': [
-        {
-            'simple': 'Administrator',
-            'role': 'http://purl.imsglobal.org/vocab/lis/v2/membership#Administrator',
-        },
-        {
-            'simple': 'Instructor',
-            'role': 'http://purl.imsglobal.org/vocab/lis/v2/membership#Instructor',
-        },
+        'http://purl.imsglobal.org/vocab/lis/v2/membership#Administrator',
     ],
     'instructor': [
-        {
-            'simple': 'Instructor',
-            'role': 'http://purl.imsglobal.org/vocab/lis/v2/membership#Instructor',
-        },
+        'http://purl.imsglobal.org/vocab/lis/v2/membership#Instructor',
     ],
     'student': [
-        {
-            'simple': 'Learner',
-            'role': 'http://purl.imsglobal.org/vocab/lis/v2/membership#Learner',
-        }
+        'http://purl.imsglobal.org/vocab/lis/v2/membership#Learner',
     ],
 }
 
