@@ -8,11 +8,7 @@ from django.http import JsonResponse, Http404
 from django.db import transaction
 from django.conf import settings
 from django.core.exceptions import ObjectDoesNotExist
-from django.core.paginator import Paginator
-from django.contrib.auth import get_user_model
-from django.db.models import Prefetch, Q
 from django.http import HttpResponse, JsonResponse
-from django.utils.http import urlencode
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_http_methods
 from django.views.decorators.clickjacking import xframe_options_sameorigin
@@ -20,9 +16,8 @@ from django.shortcuts import render
 from django_filters.rest_framework import DjangoFilterBackend
 from opaque_keys import InvalidKeyError
 from opaque_keys.edx.keys import UsageKey
-from rest_framework import viewsets, status, mixins
+from rest_framework import viewsets, status
 from rest_framework.decorators import action
-from rest_framework.reverse import reverse
 from rest_framework.response import Response
 
 from lti_consumer.exceptions import LtiError
@@ -43,7 +38,7 @@ from lti_consumer.lti_1p3.extensions.rest_framework.serializers import (
 )
 from lti_consumer.lti_1p3.extensions.rest_framework.permissions import (
     LtiAgsPermissions,
-    LtiNrpsPermissions,
+    LtiNrpsContextMembershipsPermissions,
 )
 from lti_consumer.lti_1p3.extensions.rest_framework.authentication import Lti1p3ApiAuthentication
 from lti_consumer.lti_1p3.extensions.rest_framework.renderers import (
@@ -57,6 +52,7 @@ from lti_consumer.lti_1p3.extensions.rest_framework.parsers import (
     LineItemParser,
     LineItemScoreParser,
 )
+from lti_consumer.lti_1p3.extensions.rest_framework.pagination import LinkHeaderPagination
 from lti_consumer.plugin import compat
 from lti_consumer.utils import _
 
@@ -425,151 +421,78 @@ class LtiAgsLineItemViewset(viewsets.ModelViewSet):
         )
 
 
-class LtiNrpsViewSet(mixins.ListModelMixin, viewsets.GenericViewSet):
+class LtiNrpsContextMembershipViewSet(viewsets.ModelViewSet):
     """
-    Api Endpoints for LTI NPRS Services
+    LTI NRPS Context Membership Service endpoint.
     """
-    serializer_class = LtiNrpsContextMembershipSerializer
 
     # Custom permission classes for LTI APIs
     authentication_classes = [Lti1p3ApiAuthentication]
-    permission_classes = [LtiNrpsPermissions]
+    permission_classes = [LtiNrpsContextMembershipsPermissions]
 
     # Renderer classes to accept LTI NRPS content types
     renderer_classes = [
         MembershipResultRenderer,
     ]
 
-    def get_page_size(self):
+    serializer_class = LtiNrpsContextMembershipSerializer
+
+    # Custom pagination class to support pagination via Link Header
+    pagination_class = LinkHeaderPagination
+
+    def parse_role_filter(self):
         """
-        Get Page size for pagination
-        """
-        return settings.REST_FRAMEWORK.get('PAGE_SIZE', 10)
-
-    def build_queryset(self, filter_by=None):
-        """
-        Given a course key return a list of enrollments.
-        """
-        # pylint: disable=import-error,import-outside-toplevel,no-name-in-module
-        from common.djangoapps.student.models import CourseAccessRole
-
-        course_key = self.request.lti_configuration.location.course_key
-
-        User = get_user_model()
-
-        # prepare prefetch query for course access role to speed up lookup
-        pref_course_access_role = Prefetch(
-            'courseaccessrole_set',
-            CourseAccessRole.objects.filter(
-                course_id=course_key, role__in=['instructor', 'staff'])
-        )
-
-        # fetch users that has either an access role or an enrollment
-        queryset = User.objects.filter()
-
-        if filter_by:
-            if filter_by == 'student':
-                queryset = queryset.filter(
-                    courseenrollment__course_id=course_key,
-                    courseenrollment__is_active=True
-                )
-            elif filter_by == 'instructor':
-                queryset = queryset.filter(
-                    courseaccessrole__course_id=course_key,
-                    courseaccessrole__role='instructor'
-                )
-            elif filter_by == 'staff':
-                queryset = queryset.filter(
-                    courseaccessrole__course_id=course_key,
-                    courseaccessrole__role='staff'
-                )
-        else:
-            queryset = queryset.filter(
-                Q(courseenrollment__course_id=course_key, courseenrollment__is_active=True) |
-                Q(courseaccessrole__course_id=course_key)
-            )
-
-        # distinct prevents duplicates when matching on many to many relation
-        queryset = queryset.prefetch_related(pref_course_access_role).distinct()
-
-        return queryset
-
-    @action(methods=['GET'], detail=False, url_path='memberships')
-    def memberships(self, request, *args, **kwargs):
-        """
-        LTI NRPS Context Membership service endpoint.
-
-        See full API spec on -
-        https://www.imsglobal.org/spec/lti-nrps/v2p0#context-membership
+        Parse role filter from query param and map it to edx role.
         """
         role_filter_param = self.request.query_params.get('role', None)
 
-        # get current page number, make sure it's an integer
-        current_page = self.request.query_params.get('page', 1)
-        try:
-            current_page = int(current_page)
-        except ValueError:
-            current_page = 1
-
-        # find internal role from given role_filter_param
-        role_filter = None
+        matched_role = None
         if role_filter_param:
             for edx_role, context_roles in LTI_1P3_CONTEXT_ROLE_MAP.items():
-                for context_role in context_roles:
-                    # role can have full or simple version
-                    # more - https://www.imsglobal.org/spec/lti-nrps/v2p0#role-query-parameter
-                    if role_filter_param in (context_role['simple'], context_role['role']):
-                        role_filter = edx_role
-                        break
+                if role_filter_param in context_roles:
+                    matched_role = edx_role
 
-        # build queryset with filter
-        member_queryset = self.build_queryset(role_filter)
+        return matched_role
 
-        # create pagination
-        paginator = Paginator(member_queryset, self.get_page_size())
+    def get_queryset(self):
+        """
+        Get User queryset related to current course. Also filter via role if provided.
+        """
 
-        members = paginator.page(current_page)
+        # get course key
+        course_key = self.request.lti_configuration.location.course_key
 
-        current_endpoint = reverse(
-            'lti_consumer:lti-nrps-view-memberships',
-            kwargs={
-                'lti_config_id': request.lti_configuration.id,
-            },
-            request=request,
-        )
-
-        # this will be used to create links with query params
-        url_build_params = {
-            'page': current_page
+        kwargs = {
+            'access_roles': [],
+            'include_students': True,
+            'prefetch_accessroles': True,
         }
-        if role_filter_param:
-            url_build_params['role'] = role_filter_param
 
-        # prepare result
+        # check if role filter has given
+        filter_by = self.parse_role_filter()
+
+        if filter_by is None:
+            # if no role filter given, we are interested in instructor & staff. other access
+            # roles like beta tester etc doesn't have equivalent role in LTI Context Role vocab.
+            kwargs['access_roles'] = ['instructor', 'staff']
+        elif filter_by != 'student':
+            kwargs['access_roles'] = [filter_by]
+            # exclude students if filtered by any access role
+            kwargs['include_students'] = False
+
+        return compat.get_course_members(course_key, **kwargs)
+
+    def get_serializer(self, data, **kwargs):  # pylint: disable=arguments-differ
+        """
+        Override get_serializer method to change data structure
+        to match LtiNrpsContextMembershipSerializer.
+        """
+        # prepare datastructure supported by serializer
         result = {
-            'id': "{}?{}".format(current_endpoint, urlencode(url_build_params)),
+            'id': self.request.build_absolute_uri(),
             'context': {
-                'id': request.lti_configuration.location.course_key
+                'id': self.request.lti_configuration.location.course_key
             },
-            'members': members,
+            'members': data,
         }
-
-        serializer = LtiNrpsContextMembershipSerializer(
-            result,
-            context={'request': self.request},
-        )
-
-        # prepare header links for pagination
-        # more - https://www.imsglobal.org/spec/lti-nrps/v2p0#limit-query-parameter
-        header_links = []
-
-        # check if there is more pages in pagination
-        # if there is more, create next page link
-        if members.has_next():
-            url_build_params['page'] = members.next_page_number()
-            next_page_url = '{}?{}'.format(current_endpoint, urlencode(url_build_params))
-            header_links.append('<{}>; rel="{}"'.format(next_page_url, 'next'))
-
-        headers = {'Link': ', '.join(header_links)} if header_links else {}
-
-        return Response(serializer.data, headers=headers)
+        return super(LtiNrpsContextMembershipViewSet, self).get_serializer(result)

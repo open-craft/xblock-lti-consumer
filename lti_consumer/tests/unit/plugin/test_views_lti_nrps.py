@@ -4,30 +4,21 @@ Tests for LTI Names and Role Provisioning Service views.
 from mock import patch, PropertyMock, Mock
 from Cryptodome.PublicKey import RSA
 from jwkest.jwk import RSAKey
-from django.urls import reverse
-from django.utils.http import urlencode
-from rest_framework import serializers
 from rest_framework.test import APITransactionTestCase
+from rest_framework.reverse import reverse
 
 from lti_consumer.lti_xblock import LtiConsumerXBlock
 from lti_consumer.models import LtiConfiguration
 from lti_consumer.tests.unit.test_utils import make_xblock
 
 
-# pylint: disable=abstract-method
-class MockUserReadOnlySerializer(serializers.Serializer):
-    """
-    Dummy class to mock UserReadOnlySerializer
-    """
-
-
-class LtiNrpsViewSetTestCase(APITransactionTestCase):
+class LtiNrpsTestCase(APITransactionTestCase):
     """
     Test LtiNrpsViewSet actions
     """
 
     def setUp(self):
-        super(LtiNrpsViewSetTestCase, self).setUp()
+        super(LtiNrpsTestCase, self).setUp()
 
         # Create custom LTI Block
         self.rsa_key_id = "1"
@@ -78,16 +69,19 @@ class LtiNrpsViewSetTestCase(APITransactionTestCase):
         )
         self.addCleanup(serializer_compat_patcher.stop)
         self._serializer_compat_patcher = serializer_compat_patcher.start()
-        self._serializer_compat_patcher.get_user_readonly_serializer.return_value = MockUserReadOnlySerializer
+
+        # patch profile image call
+        self._serializer_compat_patcher.get_user_profile_image.return_value = {
+            'medium': 'test-image-url'
+        }
 
         # create a fixed external uuid
         self._fixed_external_id = 'aad2e332-85df-4a08-ab64-a312e6dc4b72'
         mock_external_id_instance = Mock()
         mock_external_id_instance.external_user_id = self._fixed_external_id
         self._serializer_compat_patcher.get_or_create_externalid.return_value = (mock_external_id_instance, False,)
-
         self.context_membership_endpoint = reverse(
-            'lti_consumer:lti-nrps-view-memberships',
+            'lti_consumer:lti-nrps-memberships-view-list',
             kwargs={
                 "lti_config_id": self.lti_config.id
             }
@@ -110,21 +104,6 @@ class LtiNrpsViewSetTestCase(APITransactionTestCase):
             HTTP_AUTHORIZATION="Bearer {}".format(token)
         )
 
-    def test_context_membership_unauthenticated_request(self):
-        """
-        Test if context membership throws 403 if request is unauthenticated
-        """
-        response = self.client.get(self.context_membership_endpoint)
-        self.assertEqual(response.status_code, 403)
-
-    def test_context_membership_token_with_incorrect_scope(self):
-        """
-        Test if context membership throws 403 if token don't have correct scope
-        """
-        self._set_lti_token()
-        response = self.client.get(self.context_membership_endpoint)
-        self.assertEqual(response.status_code, 403)
-
     def _generate_mock_member(self, num, role='student'):
         """
         Helper method to generate mock users.
@@ -137,8 +116,10 @@ class LtiNrpsViewSetTestCase(APITransactionTestCase):
         mock_staff_role = Mock()
         mock_staff_role.role = 'staff'
 
-        for _ in range(num):
+        for i in range(num):
             member = Mock()
+            member.name = 'Member {}'.format(i)
+            member.email = 'member{}@example.com'.format(i)
             if role == 'student':
                 member.courseenrollment_set.count.return_value = 1
                 member.courseaccessrole_set.all.return_value = []
@@ -170,56 +151,104 @@ class LtiNrpsViewSetTestCase(APITransactionTestCase):
             result[rel_part] = link_part
         return result
 
-    @patch('lti_consumer.plugin.views.LtiNrpsViewSet.build_queryset')
-    @patch('lti_consumer.plugin.views.LtiNrpsViewSet.get_page_size')
-    def test_context_membership_token_with_correct_scope(self, get_page_size_patcher, build_queryset_patcher):
+
+class LtiNrpsContextMembershipViewsetTestCase(LtiNrpsTestCase):
+    """
+    Test LTI-NRPS Context Membership Endpoint
+    """
+
+    def test_unauthenticated_request(self):
+        """
+        Test if context membership throws 403 if request is unauthenticated
+        """
+        response = self.client.get(self.context_membership_endpoint)
+        self.assertEqual(response.status_code, 403)
+
+    def test_token_with_incorrect_scope(self):
+        """
+        Test if context membership throws 403 if token don't have correct scope
+        """
+        self._set_lti_token()
+        response = self.client.get(self.context_membership_endpoint)
+        self.assertEqual(response.status_code, 403)
+
+    @patch('lti_consumer.lti_1p3.extensions.rest_framework.serializers.expose_pii_fields', return_value=False)
+    @patch('lti_consumer.plugin.views.compat.get_course_members')
+    def test_token_with_correct_scope(self, get_course_members_patcher, expose_pii_fields_patcher):  # pylint: disable=unused-argument
         """
         Test if context membership returns correct response when token has correct scope
         """
-        get_page_size_patcher.return_value = 10
-        build_queryset_patcher.return_value = self._generate_mock_member(0)
+        get_course_members_patcher.return_value = self._generate_mock_member(0)
         self._set_lti_token('https://purl.imsglobal.org/spec/lti-nrps/scope/contextmembership.readonly')
         response = self.client.get(self.context_membership_endpoint)
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response['content-type'], 'application/vnd.ims.lti-nrps.v2.membershipcontainer+json')
 
-    @patch('lti_consumer.plugin.views.LtiNrpsViewSet.build_queryset')
-    @patch('lti_consumer.plugin.views.LtiNrpsViewSet.get_page_size')
-    def test_get_context_membership(self, get_page_size_patcher, build_queryset_patcher):
+    @patch('lti_consumer.lti_1p3.extensions.rest_framework.serializers.expose_pii_fields', return_value=False)
+    @patch('lti_consumer.plugin.views.compat.get_course_members')
+    def test_get_without_pii(self, get_course_members_patcher, expose_pii_fields_patcher):
         """
-        Test context membership endpoint response structure.
+        Test context membership endpoint response structure with PII not exposed.
         """
-        get_page_size_patcher.return_value = 10
         mock_members = self._generate_mock_member(4)
-        build_queryset_patcher.return_value = mock_members
+        get_course_members_patcher.return_value = mock_members
         self._set_lti_token('https://purl.imsglobal.org/spec/lti-nrps/scope/contextmembership.readonly')
         response = self.client.get(self.context_membership_endpoint)
-        self.assertEqual(
-            response.data['id'],
-            'http://testserver/lti_consumer/v1/lti/{}/lti-nrps/memberships?page=1'.format(
-                self.lti_config.id,
-            ),
-        )
+        self.assertEqual(response.data['id'], 'http://testserver{}'.format(self.context_membership_endpoint))
         self.assertEqual(len(response.data['members']), 4)
         self.assertEqual(response.has_header('Link'), False)
 
-    @patch('lti_consumer.plugin.views.LtiNrpsViewSet.build_queryset')
-    @patch('lti_consumer.plugin.views.LtiNrpsViewSet.get_page_size')
-    def test_get_context_membership_pagination(self, get_page_size_patcher, build_queryset_patcher):
+        expose_pii_fields_patcher.assert_called()
+
+        # name & email should not be exposed.
+        member_fields = response.data['members'][0].keys()
+        self.assertEqual(all([
+            'user_id' in member_fields,
+            'roles' in member_fields,
+            'status' in member_fields,
+            'email' not in member_fields,
+            'name' not in member_fields,
+        ]), True)
+
+    @patch('lti_consumer.lti_1p3.extensions.rest_framework.serializers.expose_pii_fields', return_value=True)
+    @patch('lti_consumer.plugin.views.compat.get_course_members')
+    def test_get_with_pii(self, get_course_members_patcher, expose_pii_fields_patcher):
+        """
+        Test context membership endpoint response structure with PII exposed.
+        """
+        mock_members = self._generate_mock_member(4)
+        get_course_members_patcher.return_value = mock_members
+        self._set_lti_token('https://purl.imsglobal.org/spec/lti-nrps/scope/contextmembership.readonly')
+        response = self.client.get(self.context_membership_endpoint)
+
+        self.assertEqual(response.data['id'], 'http://testserver{}'.format(self.context_membership_endpoint))
+        self.assertEqual(len(response.data['members']), 4)
+        self.assertEqual(response.has_header('Link'), False)
+
+        expose_pii_fields_patcher.assert_called()
+
+        # name & email should be present along with user_id, roles etc.
+        member_fields = response.data['members'][0].keys()
+        self.assertEqual(all([
+            'user_id' in member_fields,
+            'roles' in member_fields,
+            'status' in member_fields,
+            'email' in member_fields,
+            'name' in member_fields,
+        ]), True)
+
+    @patch('lti_consumer.lti_1p3.extensions.rest_framework.serializers.expose_pii_fields', return_value=False)
+    @patch('lti_consumer.plugin.views.compat.get_course_members')
+    def test_pagination(self, get_course_members_patcher, expose_pii_fields_patcher):  # pylint: disable=unused-argument
         """
         Test that context membership endpoint supports pagination with Link headers.
         """
-        get_page_size_patcher.return_value = 10
         mock_members = self._generate_mock_member(15)
-        build_queryset_patcher.return_value = mock_members
+        get_course_members_patcher.return_value = mock_members
         self._set_lti_token('https://purl.imsglobal.org/spec/lti-nrps/scope/contextmembership.readonly')
         response = self.client.get(self.context_membership_endpoint)
-        self.assertEqual(
-            response.data['id'],
-            'http://testserver/lti_consumer/v1/lti/{}/lti-nrps/memberships?page=1'.format(
-                self.lti_config.id,
-            ),
-        )
+
+        self.assertEqual(response.data['id'], 'http://testserver{}'.format(self.context_membership_endpoint))
         self.assertEqual(len(response.data['members']), 10)
         self.assertEqual(response.has_header('Link'), True)
 
@@ -227,33 +256,25 @@ class LtiNrpsViewSetTestCase(APITransactionTestCase):
 
         response = self.client.get(header_links['next'])
         self.assertEqual(len(response.data['members']), 5)
-        self.assertEqual(response.has_header('Link'), False)
 
-    @patch('lti_consumer.plugin.views.LtiNrpsViewSet.build_queryset')
-    @patch('lti_consumer.plugin.views.LtiNrpsViewSet.get_page_size')
-    def test_get_context_membership_filter(self, get_page_size_patcher, build_queryset_patcher):
+        header_links = self._parse_link_headers(response['Link'])
+        self.assertEqual(header_links.get('next'), None)
+
+    @patch('lti_consumer.lti_1p3.extensions.rest_framework.serializers.expose_pii_fields', return_value=False)
+    @patch('lti_consumer.plugin.views.compat.get_course_members')
+    def test_filter(self, get_course_members_patcher, expose_pii_fields_patcher):  # pylint: disable=unused-argument
         """
         Test if context membership properly builds query with given filter role.
         """
-        get_page_size_patcher.return_value = 10
         mock_members = self._generate_mock_member(5)
-        build_queryset_patcher.return_value = mock_members
+        get_course_members_patcher.return_value = mock_members
         self._set_lti_token('https://purl.imsglobal.org/spec/lti-nrps/scope/contextmembership.readonly')
 
-        response = self.client.get('{}?role=Administrator'.format(self.context_membership_endpoint))
-        self.assertEqual(
-            response.data['id'],
-            'http://testserver/lti_consumer/v1/lti/{}/lti-nrps/memberships?{}'.format(
-                self.lti_config.id,
-                urlencode({
-                    'page': 1,
-                    'role': 'Administrator'
-                })
-            ),
-        )
+        self.client.get('{}?role={}'.format(
+            self.context_membership_endpoint,
+            'http://purl.imsglobal.org/vocab/lis/v2/membership#Administrator'
+        ))
 
-        # actual filtering will happen in Django ORM, here we test if correct role has passed for filtering.
-        self.assertEqual(
-            build_queryset_patcher.call_args[0][0],
-            'staff'
-        )
+        call_kwargs = get_course_members_patcher.call_args[1]
+        self.assertEqual(call_kwargs['include_students'], False)
+        self.assertEqual(call_kwargs['access_roles'], ['staff'])
