@@ -77,24 +77,23 @@ class LtiAgsPermissions(LTIBasePermissions):
         return scopes
 
 
-class LtiNrpsPermissions(LTIBasePermissions):
+class LtiNrpsContextMembershipsPermissions(LTIBasePermissions):
     """
-    LTI NRPS Permissions.
+    LTI NRPS Context Memberships Permissions.
 
-    This checks if the token included in the request
-    has the allowed scopes to read/write LTI Names &
-    Roles Provisioning Services.
+    This checks if the token included in the request has the allowed scopes to read/write
+    the LTI NRPS Context Memberships Service.
 
     Context Membership scopes: https://www.imsglobal.org/spec/lti-nrps/v2p0#scope-and-service-security
     """
 
     def get_permission_scopes(self, request, view):
         """
-        Return LTI NRPS allowed scopes.
+        Return LTI NRPS Context Memberships allowed scopes.
         """
         scopes = []
 
-        if view.action == 'memberships':
+        if view.action == 'list':
             scopes = [
                 'https://purl.imsglobal.org/spec/lti-nrps/scope/contextmembership.readonly'
             ]
