@@ -137,8 +137,8 @@ def get_course_members(*args, **kwargs):
     Return a User queryset containing all members of a course.
     """
     # pylint: disable=import-error,import-outside-toplevel
-    from lms.djangoapps.course_api.api import get_course_members as course_members_api
-    return course_members_api(*args, **kwargs)
+    from lms.djangoapps.course_api.api import get_course_member_queryset
+    return get_course_member_queryset(*args, **kwargs)
 
 
 def get_user_profile_image(user):
