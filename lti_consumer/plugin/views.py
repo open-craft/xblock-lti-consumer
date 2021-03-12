@@ -6,9 +6,6 @@ import logging
 from django.core.exceptions import ObjectDoesNotExist, PermissionDenied
 from django.http import JsonResponse, Http404
 from django.db import transaction
-from django.conf import settings
-from django.core.exceptions import ObjectDoesNotExist
-from django.http import HttpResponse, JsonResponse
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_http_methods
 from django.views.decorators.clickjacking import xframe_options_sameorigin
@@ -495,4 +492,4 @@ class LtiNrpsContextMembershipViewSet(viewsets.ModelViewSet):
             },
             'members': data,
         }
-        return super(LtiNrpsContextMembershipViewSet, self).get_serializer(result)
+        return super().get_serializer(result)

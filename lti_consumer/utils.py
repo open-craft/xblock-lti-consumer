@@ -24,6 +24,7 @@ def lti_deeplinking_enabled():
     """
     return settings.FEATURES.get('LTI_DEEP_LINKING_ENABLED', False) is True  # pragma: no cover
 
+
 def expose_pii_fields():
     """
     Returns `true` if Use's PII fields can be exposed to LTI endpoints,

@@ -18,7 +18,7 @@ class LtiNrpsTestCase(APITransactionTestCase):
     """
 
     def setUp(self):
-        super(LtiNrpsTestCase, self).setUp()
+        super().setUp()
 
         # Create custom LTI Block
         self.rsa_key_id = "1"
