@@ -12,6 +12,17 @@ from lti_consumer.models import LtiConfiguration
 from lti_consumer.tests.unit.test_utils import make_xblock
 
 
+class MockUserQueryset(list):
+    """
+    Utility class to mock user queryset and count call.
+    """
+    def count(self):
+        """
+        Mock call to count method.
+        """
+        return len(self)
+
+
 class LtiNrpsTestCase(APITransactionTestCase):
     """
     Test LtiNrpsViewSet actions
@@ -108,7 +119,7 @@ class LtiNrpsTestCase(APITransactionTestCase):
         """
         Helper method to generate mock users.
         """
-        members = []
+        members = MockUserQueryset()
 
         mock_instructor_role = Mock()
         mock_instructor_role.role = 'instructor'
@@ -130,6 +141,7 @@ class LtiNrpsTestCase(APITransactionTestCase):
                 member.courseenrollment_set.count.return_value = 0
                 member.courseaccessrole_set.all.return_value = [mock_staff_role]
             members.append(member)
+
         return members
 
     def _parse_link_headers(self, links):
@@ -278,3 +290,17 @@ class LtiNrpsContextMembershipViewsetTestCase(LtiNrpsTestCase):
         call_kwargs = get_course_members_patcher.call_args[1]
         self.assertEqual(call_kwargs['include_students'], False)
         self.assertEqual(call_kwargs['access_roles'], ['staff'])
+
+    @patch('lti_consumer.plugin.views.expose_pii_fields', return_value=False)
+    @patch('lti_consumer.plugin.views.compat.get_course_members')
+    @patch('lti_consumer.plugin.views.lti_nrps_enrollment_limit', return_value=10)
+    def test_enrollment_limit_gate(self, limit_patcher, get_course_members_patcher, expose_pii_fields_patcher):  # pylint: disable=unused-argument
+        """
+        Test if number of enrolled user is larger than the limit, api returns 404 response.
+        """
+        mock_members = self._generate_mock_member(15)
+        get_course_members_patcher.return_value = mock_members
+        self._set_lti_token('https://purl.imsglobal.org/spec/lti-nrps/scope/contextmembership.readonly')
+
+        response = self.client.get(self.context_membership_endpoint)
+        self.assertEqual(response.status_code, 404)

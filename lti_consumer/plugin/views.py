@@ -51,7 +51,7 @@ from lti_consumer.lti_1p3.extensions.rest_framework.parsers import (
 )
 from lti_consumer.lti_1p3.extensions.rest_framework.pagination import LinkHeaderPagination
 from lti_consumer.plugin import compat
-from lti_consumer.utils import _, expose_pii_fields
+from lti_consumer.utils import _, expose_pii_fields, lti_nrps_enrollment_limit
 
 
 log = logging.getLogger(__name__)
@@ -418,7 +418,7 @@ class LtiAgsLineItemViewset(viewsets.ModelViewSet):
         )
 
 
-class LtiNrpsContextMembershipViewSet(viewsets.ModelViewSet):
+class LtiNrpsContextMembershipViewSet(viewsets.ReadOnlyModelViewSet):
     """
     LTI NRPS Context Membership Service endpoint.
     """
@@ -451,11 +451,10 @@ class LtiNrpsContextMembershipViewSet(viewsets.ModelViewSet):
 
         return matched_role
 
-    def get_queryset(self):
+    def queryset_helper(self, kwarg_overrides):
         """
-        Get User queryset related to current course. Also filter via role if provided.
+        Helper method to create queryset.
         """
-
         # get course key
         course_key = self.request.lti_configuration.location.course_key
 
@@ -464,6 +463,17 @@ class LtiNrpsContextMembershipViewSet(viewsets.ModelViewSet):
             'include_students': True,
             'prefetch_user_course_roles': True,
         }
+
+        if kwarg_overrides and isinstance(kwarg_overrides, dict):
+            kwargs.update(kwarg_overrides)
+
+        return compat.get_course_members(course_key, **kwargs)
+
+    def get_queryset(self):
+        """
+        Get User queryset related to current course. Also filter via role if provided.
+        """
+        kwargs = {}
 
         # check if role filter has given
         filter_by = self.parse_role_filter()
@@ -477,7 +487,7 @@ class LtiNrpsContextMembershipViewSet(viewsets.ModelViewSet):
             # exclude students if filtered by any access role
             kwargs['include_students'] = False
 
-        return compat.get_course_members(course_key, **kwargs)
+        return self.queryset_helper(kwargs)
 
     def get_serializer(self, data, **kwargs):  # pylint: disable=arguments-differ
         """
@@ -503,3 +513,16 @@ class LtiNrpsContextMembershipViewSet(viewsets.ModelViewSet):
             'expose_pii_fields': expose_pii_fields(self.request.lti_configuration.location.course_key)
         })
         return context
+
+    def list(self, *args, **kwargs):
+        """
+        Overrides default list method of ModelViewSet.
+        Checks if enrollment limit satisfies for current request.
+        """
+        queryset = self.queryset_helper({
+            'prefetch_user_course_roles': False
+        })
+        if queryset.count() <= lti_nrps_enrollment_limit():
+            return super().list(*args, **kwargs)  # pylint: disable=no-member
+        else:
+            raise Http404
