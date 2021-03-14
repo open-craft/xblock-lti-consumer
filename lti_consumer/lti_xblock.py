@@ -85,6 +85,7 @@ from .utils import (
     _,
     lti_1p3_enabled,
     lti_deeplinking_enabled,
+    lti_nrps_enabled,
 )
 
 
@@ -608,19 +609,22 @@ class LtiConsumerXBlock(StudioEditableXBlockMixin, XBlock):
 
         # Hide LTI 1.3 fields depending on configuration flags
         hide_fields = []
+
+        if not lti_deeplinking_enabled():
+            hide_fields += [
+                'lti_advantage_deep_linking_enabled',
+                'lti_advantage_deep_linking_launch_url'
+            ]
+
+        if not lti_nrps_enabled():
+            hide_fields.append('lti_1p3_enable_nrps')
+
         if not lti_1p3_enabled():
-            hide_fields = [
+            hide_fields += [
                 'lti_version',
                 'lti_1p3_launch_url',
                 'lti_1p3_oidc_url',
                 'lti_1p3_tool_public_key',
-                'lti_advantage_deep_linking_enabled',
-                'lti_advantage_deep_linking_launch_url',
-            ]
-        elif not lti_deeplinking_enabled():
-            hide_fields = [
-                'lti_advantage_deep_linking_enabled',
-                'lti_advantage_deep_linking_launch_url',
             ]
 
         if hide_fields:

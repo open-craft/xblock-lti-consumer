@@ -2,6 +2,7 @@
 Utility functions for LTI Consumer block
 """
 from django.conf import settings
+from lti_consumer.plugin.compat import get_lti_pii_course_waffle_flag
 
 
 def _(text):
@@ -25,12 +26,22 @@ def lti_deeplinking_enabled():
     return settings.FEATURES.get('LTI_DEEP_LINKING_ENABLED', False) is True  # pragma: no cover
 
 
-def expose_pii_fields():
+def lti_nrps_enabled():
     """
-    Returns `true` if Use's PII fields can be exposed to LTI endpoints,
-    ex - LTI-NRPS Context Membership Endpoint.
+    Returns `true` if LTI NRPS is enabled for instance.
     """
-    return settings.FEATURES.get('LTI_EXPOSE_PII', False) is True  # pragma: no cover
+    return settings.FEATURES.get('LTI_NRPS_ENABLED', False) is True  # pragma: no cover
+
+
+def expose_pii_fields(course_key):
+    """
+    Returns `true` if Use's PII fields can be exposed to LTI endpoints
+    for given course key. ex - LTI-NRPS Context Membership Endpoint.
+
+    Args:
+        course_key
+    """
+    return get_lti_pii_course_waffle_flag().is_enabled(course_key)
 
 
 def get_lms_base():

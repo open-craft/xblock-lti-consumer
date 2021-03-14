@@ -51,7 +51,7 @@ from lti_consumer.lti_1p3.extensions.rest_framework.parsers import (
 )
 from lti_consumer.lti_1p3.extensions.rest_framework.pagination import LinkHeaderPagination
 from lti_consumer.plugin import compat
-from lti_consumer.utils import _
+from lti_consumer.utils import _, expose_pii_fields
 
 
 log = logging.getLogger(__name__)
@@ -462,7 +462,7 @@ class LtiNrpsContextMembershipViewSet(viewsets.ModelViewSet):
         kwargs = {
             'access_roles': [],
             'include_students': True,
-            'prefetch_accessroles': True,
+            'prefetch_user_course_roles': True,
         }
 
         # check if role filter has given
@@ -493,3 +493,13 @@ class LtiNrpsContextMembershipViewSet(viewsets.ModelViewSet):
             'members': data,
         }
         return super().get_serializer(result)
+
+    def get_serializer_context(self):
+        """
+        Adds additional contexts for serializers. Ex: if PII fileds can be exposed.
+        """
+        context = super().get_serializer_context()
+        context.update({
+            'expose_pii_fields': expose_pii_fields(self.request.lti_configuration.location.course_key)
+        })
+        return context

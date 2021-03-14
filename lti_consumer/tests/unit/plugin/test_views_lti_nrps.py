@@ -172,7 +172,7 @@ class LtiNrpsContextMembershipViewsetTestCase(LtiNrpsTestCase):
         response = self.client.get(self.context_membership_endpoint)
         self.assertEqual(response.status_code, 403)
 
-    @patch('lti_consumer.lti_1p3.extensions.rest_framework.serializers.expose_pii_fields', return_value=False)
+    @patch('lti_consumer.plugin.views.expose_pii_fields', return_value=False)
     @patch('lti_consumer.plugin.views.compat.get_course_members')
     def test_token_with_correct_scope(self, get_course_members_patcher, expose_pii_fields_patcher):  # pylint: disable=unused-argument
         """
@@ -184,7 +184,7 @@ class LtiNrpsContextMembershipViewsetTestCase(LtiNrpsTestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response['content-type'], 'application/vnd.ims.lti-nrps.v2.membershipcontainer+json')
 
-    @patch('lti_consumer.lti_1p3.extensions.rest_framework.serializers.expose_pii_fields', return_value=False)
+    @patch('lti_consumer.plugin.views.expose_pii_fields', return_value=False)
     @patch('lti_consumer.plugin.views.compat.get_course_members')
     def test_get_without_pii(self, get_course_members_patcher, expose_pii_fields_patcher):
         """
@@ -210,7 +210,7 @@ class LtiNrpsContextMembershipViewsetTestCase(LtiNrpsTestCase):
             'name' not in member_fields,
         ]), True)
 
-    @patch('lti_consumer.lti_1p3.extensions.rest_framework.serializers.expose_pii_fields', return_value=True)
+    @patch('lti_consumer.plugin.views.expose_pii_fields', return_value=True)
     @patch('lti_consumer.plugin.views.compat.get_course_members')
     def test_get_with_pii(self, get_course_members_patcher, expose_pii_fields_patcher):
         """
@@ -237,7 +237,7 @@ class LtiNrpsContextMembershipViewsetTestCase(LtiNrpsTestCase):
             'name' in member_fields,
         ]), True)
 
-    @patch('lti_consumer.lti_1p3.extensions.rest_framework.serializers.expose_pii_fields', return_value=False)
+    @patch('lti_consumer.plugin.views.expose_pii_fields', return_value=False)
     @patch('lti_consumer.plugin.views.compat.get_course_members')
     def test_pagination(self, get_course_members_patcher, expose_pii_fields_patcher):  # pylint: disable=unused-argument
         """
@@ -260,7 +260,7 @@ class LtiNrpsContextMembershipViewsetTestCase(LtiNrpsTestCase):
         header_links = self._parse_link_headers(response['Link'])
         self.assertEqual(header_links.get('next'), None)
 
-    @patch('lti_consumer.lti_1p3.extensions.rest_framework.serializers.expose_pii_fields', return_value=False)
+    @patch('lti_consumer.plugin.views.expose_pii_fields', return_value=False)
     @patch('lti_consumer.plugin.views.compat.get_course_members')
     def test_filter(self, get_course_members_patcher, expose_pii_fields_patcher):  # pylint: disable=unused-argument
         """

@@ -148,3 +148,13 @@ def get_user_profile_image(user):
     # pylint: disable=import-error,import-outside-toplevel
     from openedx.core.djangoapps.user_api.accounts.image_helpers import get_profile_image_urls_for_user
     return get_profile_image_urls_for_user(user)
+
+
+def get_lti_pii_course_waffle_flag():
+    """
+    Returns Course Waffle Flag Override for PII information exposure.
+    """
+    # pylint: disable=import-error,import-outside-toplevel
+    from openedx.core.djangoapps.waffle_utils import WaffleFlagNamespace, CourseWaffleFlag
+    namespace = WaffleFlagNamespace('lti_consumer')
+    return CourseWaffleFlag(namespace, 'lti_nrps_transmit_pii', __name__)

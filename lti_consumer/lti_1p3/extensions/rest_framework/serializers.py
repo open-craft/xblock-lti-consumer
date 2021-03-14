@@ -10,7 +10,6 @@ from opaque_keys.edx.keys import UsageKey
 from lti_consumer.models import LtiAgsLineItem, LtiAgsScore
 from lti_consumer.lti_1p3.constants import LTI_1P3_CONTEXT_ROLE_MAP
 from lti_consumer.plugin import compat
-from lti_consumer.utils import expose_pii_fields
 
 
 class UsageKeyField(serializers.Field):
@@ -455,7 +454,7 @@ class LtiNrpsContextMembershipSerializer(serializers.Serializer):
         members = obj.get('members', [])
 
         # Check if PII fields can be exposed
-        if expose_pii_fields():
+        if self.context.get('expose_pii_fields', False):  # pylint: disable=no-member
             serializer_cls = LtiNrpsContextMemberPIISerializer
         else:
             serializer_cls = LtiNrpsContextMemberBasicSerializer
