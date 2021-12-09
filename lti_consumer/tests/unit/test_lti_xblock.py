@@ -11,7 +11,7 @@ import ddt
 from Cryptodome.PublicKey import RSA
 from django.test.testcases import TestCase
 from django.utils import timezone
-from jwkest.jwk import RSAKey
+from jwkest.jwk import RSAKey, KEYS
 
 from lti_consumer.api import get_lti_1p3_launch_info
 from lti_consumer.exceptions import LtiError
@@ -425,6 +425,8 @@ class TestEditableFields(TestLtiConsumerXBlock):
                     'lti_version',
                     'lti_1p3_launch_url',
                     'lti_1p3_oidc_url',
+                    'lti_1p3_tool_key_mode',
+                    'lti_1p3_tool_keyset_url',
                     'lti_1p3_tool_public_key',
                     'lti_advantage_deep_linking_enabled',
                     'lti_advantage_deep_linking_launch_url',
@@ -1531,4 +1533,34 @@ class TestLti1p3AccessTokenEndpoint(TestLtiConsumerXBlock):
         request.content_type = 'application/x-www-form-urlencoded'
 
         response = self.xblock.lti_1p3_access_token(request)
+        self.assertEqual(response.status_code, 200)
+
+    @patch('lti_consumer.lti_1p3.key_handlers.load_jwks_from_url')
+    def test_access_token_using_keyset_url(self, load_jwks_from_url):
+        """
+        Test request with valid JWT, using the provider's keyset URL
+        instead of a public key.
+        """
+        self.xblock.lti_1p3_tool_public_key = ''
+        self.xblock.lti_1p3_tool_keyset_url = 'http://tool.example/keyset'
+        self.xblock.save()
+
+        jwt = create_jwt(self.key, {})
+        request = make_request(
+            urllib.parse.urlencode({
+                "grant_type": "client_credentials",
+                "client_assertion_type": "something",
+                "client_assertion": jwt,
+                "scope": "",
+            }),
+            'POST'
+        )
+        request.content_type = 'application/x-www-form-urlencoded'
+
+        jwks = KEYS()
+        jwks._keys = [self.key]  # pylint: disable=protected-access
+        load_jwks_from_url.return_value = jwks
+
+        response = self.xblock.lti_1p3_access_token(request)
+        load_jwks_from_url.assert_called_once_with('http://tool.example/keyset')
         self.assertEqual(response.status_code, 200)
