@@ -1538,8 +1538,7 @@ class TestLti1p3AccessTokenEndpoint(TestLtiConsumerXBlock):
     @patch('lti_consumer.lti_1p3.key_handlers.load_jwks_from_url')
     def test_access_token_using_keyset_url(self, load_jwks_from_url):
         """
-        Test request with valid JWT, using the provider's keyset URL
-        instead of a public key.
+        Test request with valid JWT, using the provider's keyset URL instead of a public key.
         """
         self.xblock.lti_1p3_tool_public_key = ''
         self.xblock.lti_1p3_tool_keyset_url = 'http://tool.example/keyset'
@@ -1564,3 +1563,123 @@ class TestLti1p3AccessTokenEndpoint(TestLtiConsumerXBlock):
         response = self.xblock.lti_1p3_access_token(request)
         load_jwks_from_url.assert_called_once_with('http://tool.example/keyset')
         self.assertEqual(response.status_code, 200)
+
+    @patch('lti_consumer.lti_1p3.key_handlers.load_jwks_from_url')
+    def test_access_token_using_keyset_url_with_empty_keys(self, load_jwks_from_url):
+        """
+        Test request with valid JWT, where the provider's keyset URL returns an empty list of keys.
+        """
+        self.xblock.lti_1p3_tool_public_key = ''
+        self.xblock.lti_1p3_tool_keyset_url = 'http://tool.example/keyset'
+        self.xblock.save()
+
+        jwt = create_jwt(self.key, {})
+        request = make_request(
+            urllib.parse.urlencode({
+                "grant_type": "client_credentials",
+                "client_assertion_type": "something",
+                "client_assertion": jwt,
+                "scope": "",
+            }),
+            'POST'
+        )
+        request.content_type = 'application/x-www-form-urlencoded'
+
+        jwks = KEYS()
+        jwks._keys = []  # pylint: disable=protected-access
+        load_jwks_from_url.return_value = jwks
+
+        response = self.xblock.lti_1p3_access_token(request)
+        load_jwks_from_url.assert_called_once_with('http://tool.example/keyset')
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.json_body, {'error': 'invalid_client'})
+
+    @patch('lti_consumer.lti_1p3.key_handlers.load_jwks_from_url')
+    def test_access_token_using_keyset_url_with_wrong_keys(self, load_jwks_from_url):
+        """
+        Test request with valid JWT, where the provider's keyset URL returns wrong keys.
+        """
+        self.xblock.lti_1p3_tool_public_key = ''
+        self.xblock.lti_1p3_tool_keyset_url = 'http://tool.example/keyset'
+        self.xblock.save()
+
+        jwt = create_jwt(self.key, {})
+        request = make_request(
+            urllib.parse.urlencode({
+                "grant_type": "client_credentials",
+                "client_assertion_type": "something",
+                "client_assertion": jwt,
+                "scope": "",
+            }),
+            'POST'
+        )
+        request.content_type = 'application/x-www-form-urlencoded'
+
+        rsa_key = RSA.generate(2048)
+        key = RSAKey(key=rsa_key, kid='2')
+
+        jwks = KEYS()
+        jwks._keys = [key]  # pylint: disable=protected-access
+        load_jwks_from_url.return_value = jwks
+
+        response = self.xblock.lti_1p3_access_token(request)
+        load_jwks_from_url.assert_called_once_with('http://tool.example/keyset')
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.json_body, {'error': 'invalid_client'})
+
+    @patch('jwkest.jwk.request')
+    def test_access_token_using_keyset_url_that_fails(self, request_func):
+        """
+        Test request with valid JWT, where the provider's keyset URL request fails.
+        """
+        self.xblock.lti_1p3_tool_public_key = ''
+        self.xblock.lti_1p3_tool_keyset_url = 'http://tool.example/keyset'
+        self.xblock.save()
+
+        jwt = create_jwt(self.key, {})
+        request = make_request(
+            urllib.parse.urlencode({
+                "grant_type": "client_credentials",
+                "client_assertion_type": "something",
+                "client_assertion": jwt,
+                "scope": "",
+            }),
+            'POST'
+        )
+        request.content_type = 'application/x-www-form-urlencoded'
+
+        request_func.side_effect = Exception('request fails')
+
+        response = self.xblock.lti_1p3_access_token(request)
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.json_body, {'error': 'invalid_client'})
+
+    @patch('jwkest.jwk.request')
+    def test_access_token_using_keyset_url_with_invalid_contents(self, request_func):
+        """
+        Test request with valid JWT, where the provider's keyset URL doesn't return valid JSON.
+        """
+        self.xblock.lti_1p3_tool_public_key = ''
+        self.xblock.lti_1p3_tool_keyset_url = 'http://tool.example/keyset'
+        self.xblock.save()
+
+        jwt = create_jwt(self.key, {})
+        request = make_request(
+            urllib.parse.urlencode({
+                "grant_type": "client_credentials",
+                "client_assertion_type": "something",
+                "client_assertion": jwt,
+                "scope": "",
+            }),
+            'POST'
+        )
+        request.content_type = 'application/x-www-form-urlencoded'
+
+        res = Mock()
+        res.status_code = 200
+        res.text = b'this is not a valid json'
+        request_func.return_value = res
+
+        response = self.xblock.lti_1p3_access_token(request)
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.json_body, {'error': 'invalid_client'})
