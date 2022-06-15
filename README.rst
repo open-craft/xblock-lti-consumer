@@ -318,17 +318,13 @@ Please do not report security issues in public. Send security concerns via email
 Changelog
 =========
 
-3.4.1 - 2022-02-01
+2.10.2 - 2022-06-15
 ------------------
 
 * Fix the target_link_uri parameter on OIDC login preflight url parameter so it matches 
   claim message definition of the field.
   See docs at https://www.imsglobal.org/spec/lti/v1p3#target-link-uri
-
-3.4.0 - 2022-01-31
-------------------
-
-* Fix the version number by bumping it up to 3.4.0
+* The fix was cherry-picked and added from `this commit on Version 3.4.1 <https://github.com/openedx/xblock-lti-consumer/commit/4629192807d31dd9d19144fbd71c9d50b2da7da5>`_.
 
 2.10.1 - 2021-06-09
 -------------------
