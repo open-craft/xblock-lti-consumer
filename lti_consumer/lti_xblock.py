@@ -73,7 +73,9 @@ except ModuleNotFoundError:  # For backward compatibility with releases older th
     from xblockutils.studio_editable import StudioEditableXBlockMixin
 
 from .data import Lti1p3LaunchData
+from .effective import LtiConfigurationError
 from .exceptions import LtiError
+from .fields import EffectiveBoolean, EffectiveFloat
 from .filters import get_external_config_from_filter
 from .lti_1p1.consumer import LTI_PARAMETERS, LtiConsumer1p1, parse_result_json
 from .lti_1p1.oauth import log_authorization_header
@@ -485,13 +487,14 @@ class LtiConsumerXBlock(StudioEditableXBlockMixin, XBlock):
         default=80,
         scope=Scope.settings
     )
-    has_score = Boolean(
+    has_score = EffectiveBoolean(
         display_name=_("This activity is graded"),
         help=_("Enable this if the tool sends a numeric score back to Open edX."),
         default=False,
-        scope=Scope.settings
+        scope=Scope.settings,
+        effective_member='enable_grading',
     )
-    weight = Float(
+    weight = EffectiveFloat(
         display_name=_("Grade Weight"),
         help=_(
             "Enter the maximum number of points for this component."
@@ -499,6 +502,7 @@ class LtiConsumerXBlock(StudioEditableXBlockMixin, XBlock):
         default=1.0,
         scope=Scope.settings,
         values={"min": 0},
+        effective_member='grade_weight',
     )
     module_score = Float(
         help=_("The score kept in the xblock KVS -- duplicate of the published score in django DB"),
@@ -645,7 +649,8 @@ class LtiConsumerXBlock(StudioEditableXBlockMixin, XBlock):
                 _('Reusable configuration ID must be set when using external config (Example: "x:y").'),
             )))
 
-        # keyset URL and public key are mutually exclusive
+        # keyset URL and public key are mutually exclusive. Authoring only: this blanks the block's
+        # own field, never the placement's frozen historical pair.
         if data.lti_1p3_tool_key_mode == 'keyset_url':
             data.lti_1p3_tool_public_key = ''
         elif data.lti_1p3_tool_key_mode == 'public_key':
@@ -684,7 +689,7 @@ class LtiConsumerXBlock(StudioEditableXBlockMixin, XBlock):
         """
         Read the parameter processor functions from the settings and return their functions.
         """
-        if not self.enable_processors:
+        if not self._get_runtime_settings()['send_extra_parameters']:
             return
 
         try:
@@ -1041,10 +1046,12 @@ class LtiConsumerXBlock(StudioEditableXBlockMixin, XBlock):
         See http://www.imsglobal.org/LTI/v1p1p1/ltiIMGv1p1p1.html#_Toc316828520
         """
 
+        runtime = self._get_runtime_settings()
+
         # parsing custom parameters to dict
         custom_parameters = {}
-        if isinstance(self.custom_parameters, list):
-            for custom_parameter in self.custom_parameters:
+        if isinstance(runtime['custom_parameters'], list):
+            for custom_parameter in runtime['custom_parameters']:
                 try:
                     param_name, param_value = [p.strip() for p in custom_parameter.split('=', 1)]
                 except ValueError as err:
@@ -1063,7 +1070,7 @@ class LtiConsumerXBlock(StudioEditableXBlockMixin, XBlock):
 
                 custom_parameters[param_name] = param_value
 
-        custom_parameters['custom_component_display_name'] = str(self.display_name)
+        custom_parameters['custom_component_display_name'] = str(runtime['display_name'])
 
         if getattr(self, 'due', None):
             custom_parameters.update({
@@ -1110,37 +1117,85 @@ class LtiConsumerXBlock(StudioEditableXBlockMixin, XBlock):
 
         return get_lti_consumer(config_id_for_block(self))
 
+    def get_effective_configuration(self):
+        """
+        Return the effective settings for this block's placement.
+
+        The placement row is read, never created, and resolving it performs no write and
+        generates no keys. A block without a placement row has no configuration at all, and
+        there is no block-field fallback for internal placements, so that raises
+        `LtiConfigurationError`.
+        """
+        # Runtime imports since this only runs in the Open edX LMS/Studio environments.
+        from lti_consumer.effective import resolve_lti_configuration  # pylint: disable=import-outside-toplevel
+        from lti_consumer.models import LtiConfiguration  # pylint: disable=import-outside-toplevel
+
+        # The bound configuration is read in the same query: resolution always needs it.
+        placement = (
+            LtiConfiguration.objects
+            .select_related('reusable_configuration')
+            .filter(location=self.scope_ids.usage_id)
+            .first()
+        )
+        if placement is None:
+            raise LtiConfigurationError(
+                'This LTI component has no configuration placement yet.',
+            )
+        return resolve_lti_configuration(placement)
+
+    def _get_runtime_settings(self, effective=None):
+        """
+        Return the presentation and parameter settings the learner runtime uses.
+
+        A bound internal placement takes them from its effective configuration. An external
+        configuration keeps its dynamic provider contract, which carries no presentation
+        members, so the block owns those there. The persisted placement decides which of the
+        two applies: a stale block `config_type` is never consulted.
+
+        Grading metadata is not repeated here: `has_score` and `weight` are effective fields.
+        """
+        effective = effective if effective is not None else self.get_effective_configuration()
+        if effective.is_external:
+            return {
+                'display_name': self.display_name,
+                'hide_launch': self.hide_launch,
+                'launch_target': self.launch_target,
+                'button_text': self.button_text,
+                'inline_height': self.inline_height,
+                'modal_height': self.modal_height,
+                'modal_width': self.modal_width,
+                'accept_grades_past_due': self.accept_grades_past_due,
+                'custom_parameters': self.custom_parameters,
+                'send_extra_parameters': self.enable_processors,
+                'lti_1p1_launch_url': str(self.launch_url),
+                'lti_1p3_launch_url': str(self.lti_1p3_launch_url),
+            }
+
+        return {
+            'display_name': effective.display_name,
+            'hide_launch': effective.hide_external_tool,
+            'launch_target': effective.open_tool_in,
+            'button_text': effective.launch_button_text,
+            'inline_height': effective.inline_height,
+            'modal_height': effective.modal_height,
+            'modal_width': effective.modal_width,
+            'accept_grades_past_due': effective.accept_grades_after_due_date,
+            'custom_parameters': effective.custom_parameters,
+            'send_extra_parameters': effective.send_extra_parameters,
+            'lti_1p1_launch_url': effective.lti_1p1_launch_url or '',
+            'lti_1p3_launch_url': effective.lti_1p3_launch_url or '',
+        }
+
     def get_resolved_lti_version(self):
         """
         Return the effective LTI version for this block.
 
-        When `config_type` is `"external"`, the version is determined
-        by the external re-usable config's `version` key, not by the
-        block's own `lti_version` field.  Falls back to `self.lti_version`
-        for non-external configs or when external config has no version.
-
-        If the external config lookup raises (e.g. filter service
-        unavailable), the exception is logged and the block's own
-        `lti_version` is returned as a safe fallback.
+        The persisted placement decides the source: an external reference takes the
+        provider's `version` (with the stored placement version as its fallback), and an
+        internal placement takes its resolved version. The raw `config_type` and
+        `lti_version` block fields are never consulted at runtime.
         """
-        if self.config_type != "external":
-            return self.lti_version
-
-        try:
-            config = get_external_config_from_filter(
-                {"course_key": self.scope_ids.usage_id.context_key},
-                self.external_config,
-            )
-        except Exception:  # pylint: disable=broad-except
-            log.exception(
-                "Failed to resolve external config version for config_id=%s; "
-                "falling back to block-level lti_version=%s",
-                self.external_config,
-                self.lti_version,
-            )
-            return self.lti_version
-
-        return config.get("version") or self.lti_version
+        return self.get_effective_configuration().version
 
     @XBlock.json_handler
     def resolve_external_config_version(self, data, suffix=''):  # pylint: disable=unused-argument
@@ -1255,13 +1310,24 @@ class LtiConsumerXBlock(StudioEditableXBlockMixin, XBlock):
             if field_info is not None:
                 context["fields"][field_name] = field_info
 
-        # Compute effective LTI version once and reuse for both the template
-        # context override and the JS context below.
-        effective_lti_version = self.get_resolved_lti_version()
+        # Compute the effective version once and reuse it for the template context and the JS
+        # context. Studio display is the one place that survives an absent placement: the
+        # editor has to render for a block that has not been configured yet. Runtime handlers
+        # keep raising instead of falling back.
+        try:
+            effective_lti_version = self.get_resolved_lti_version()
+        except LtiConfigurationError:
+            effective_lti_version = self.lti_version
+        except Exception:  # pylint: disable=broad-except
+            # A provider lookup failure must not break the editor either; show the stored value.
+            log.exception(
+                "Failed to resolve the LTI version for display; showing the stored value %s.",
+                self.lti_version,
+            )
+            effective_lti_version = self.lti_version
 
-        # Override lti_version display value for external config
-        # so Studio shows the effective version from the external config.
-        if self.config_type == 'external' and 'lti_version' in context['fields']:
+        # Show the effective version rather than the stale stored one.
+        if 'lti_version' in context['fields']:
             context['fields']['lti_version']['value'] = effective_lti_version
 
         i18n_service = self.runtime.service(self, 'i18n')
@@ -1330,10 +1396,12 @@ class LtiConsumerXBlock(StudioEditableXBlockMixin, XBlock):
         """
         Studio Save.
 
-        Reconciles the block's `lti_1p3_passport_id` field with the configuration
-        stored in the database, creating the reusable configuration if it doesn't
-        exist yet. Doing it here means configuration initialization never has to
-        write to the block from an LMS request, where Scope.settings is read-only.
+        Copies the bound configuration's passport id onto the block's
+        `lti_1p3_passport_id` field. Lookup only: a block with no stored placement or no
+        binding is left untouched, so saving never creates a placement or a
+        configuration. Attaching an absent binding is deferred construction state, not
+        authoring. Doing it here means configuration initialization never has to write to
+        the block from an LMS request, where Scope.settings is read-only.
         """
         from lti_consumer.api import sync_lti_passport_id_to_block  # pylint: disable=import-outside-toplevel
         sync_lti_passport_id_to_block(self)
@@ -1465,7 +1533,7 @@ class LtiConsumerXBlock(StudioEditableXBlockMixin, XBlock):
             course.display_org_with_default if course else "",
         )
 
-        if self.has_score:
+        if self.is_graded():
             lti_consumer.set_outcome_service_url(self.outcome_service_url)
 
         if real_user_data['user_language']:
@@ -1579,7 +1647,7 @@ class LtiConsumerXBlock(StudioEditableXBlockMixin, XBlock):
         if settings.DEBUG:
             log_authorization_header(request, lti_consumer.oauth_key, lti_consumer.oauth_secret)
 
-        if not self.accept_grades_past_due and self.is_past_due:
+        if not self.accepts_grades_after_due_date() and self.is_past_due():
             return Response(status=404)  # have to do 404 due to spec, but 400 is better, with error msg in body
 
         try:
@@ -1676,6 +1744,24 @@ class LtiConsumerXBlock(StudioEditableXBlockMixin, XBlock):
             self.set_user_module_score(user, score, self.max_score(), comment)
         return lti_consumer.put_result()
 
+    def is_graded(self):
+        """
+        Return whether this component is graded.
+
+        The effective field already answers from the persisted placement: resolved for an
+        internal one, stored for an external one, and its metadata default when unbound.
+        """
+        return self.has_score
+
+    def accepts_grades_after_due_date(self):
+        """
+        Return whether grades are accepted after the due date.
+
+        External configurations keep the block-owned value; an internal placement resolves it
+        from its effective configuration.
+        """
+        return self._get_runtime_settings()['accept_grades_past_due']
+
     def max_score(self):
         """
         Returns the configured number of possible points for this component.
@@ -1684,7 +1770,8 @@ class LtiConsumerXBlock(StudioEditableXBlockMixin, XBlock):
             None
 
         Returns:
-            float: The number of possible points for this component
+            float: The number of possible points for this component, or None when grading is
+                disabled. A weight of 0 with grading enabled is a real maximum of 0.
         """
         return self.weight if self.has_score else None
 
@@ -1733,18 +1820,22 @@ class LtiConsumerXBlock(StudioEditableXBlockMixin, XBlock):
         self.module_score = scaled_score
         self.score_comment = comment
 
-    def _get_lti_launch_url(self, consumer) -> str:
+    def _get_lti_launch_url(self, consumer, runtime_settings, lti_version, is_external) -> str:
         """
-        Return the LTI launch URL.
+        Return the LTI 1.1 launch URL.
+
+        An internal placement takes the resolved launch URL. An external configuration keeps
+        its dynamic provider contract, so the provider's consumer carries it there.
         """
-        launch_url = str(self.launch_url)
+        if not is_external:
+            return runtime_settings['lti_1p1_launch_url']
 
         # The lti_launch_url property only exists on the LtiConsumer1p1. The LtiConsumer1p3 does not have an
         # attribute with this name, so ensure that we're accessing it on the appropriate consumer class.
-        if consumer and self.config_type in ("database", "external") and self.get_resolved_lti_version() == "lti_1p1":
-            launch_url = consumer.lti_launch_url
+        if consumer and lti_version == "lti_1p1":
+            return consumer.lti_launch_url
 
-        return launch_url
+        return str(self.launch_url)
 
     def get_lti_1p3_custom_parameters(self):
         """
@@ -1755,6 +1846,7 @@ class LtiConsumerXBlock(StudioEditableXBlockMixin, XBlock):
             dict: Parsed custom_parameters dictionary
         """
         custom_parameters = {}
+        runtime_settings = self._get_runtime_settings()
 
         # Get site-wide extra parameters from processor functions.
         for processor in self.get_parameter_processors():
@@ -1767,8 +1859,8 @@ class LtiConsumerXBlock(StudioEditableXBlockMixin, XBlock):
                 # Useful for catching casual runtime errors in the processors.
                 log.exception('Error in XBlock LTI parameter processor "%s"', processor)
 
-        # Get custom parameters from XBlock settings.
-        for parameter in self.custom_parameters:
+        # Get custom parameters from the resolved settings.
+        for parameter in runtime_settings['custom_parameters'] or []:
             # Split parameter into key, value and remove leading, trailing spaces.
             key, value = map(str.strip, parameter.split(CUSTOM_PARAMETER_SEPARATOR, 1))
 
@@ -1839,11 +1931,11 @@ class LtiConsumerXBlock(StudioEditableXBlockMixin, XBlock):
             course.display_org_with_default if course else "",
         ])
 
-    def _get_lti_block_launch_handler(self):
+    def _get_lti_block_launch_handler(self, lti_version):
         """
-        Return the LTI block launch handler.
+        Return the LTI block launch handler for an already-resolved version.
         """
-        if self.get_resolved_lti_version() == 'lti_1p1':
+        if lti_version == 'lti_1p1':
             lti_block_launch_handler = self.runtime.handler_url(self, 'lti_launch_handler').rstrip('/?')
         else:
             launch_data = self.get_lti_1p3_launch_data()
@@ -1857,17 +1949,20 @@ class LtiConsumerXBlock(StudioEditableXBlockMixin, XBlock):
 
         return lti_block_launch_handler
 
-    def _get_lti_1p3_launch_url(self, consumer):
+    def _get_lti_1p3_launch_url(self, consumer, runtime_settings, lti_version, is_external):
         """
         Return the LTI launch URL for LTI 1.3 integrations.
+
+        An internal placement takes the resolved launch URL. An external configuration keeps
+        its dynamic provider contract, so the provider's consumer carries it there.
         """
-        lti_1p3_launch_url = self.lti_1p3_launch_url.strip()
+        if not is_external:
+            return runtime_settings['lti_1p3_launch_url']
 
-        # Get LTI launch URL from consumer if using database or external configuration type.
-        if consumer and self.get_resolved_lti_version() == 'lti_1p3' and self.config_type in ('database', 'external'):
-            lti_1p3_launch_url = consumer.launch_url
+        if consumer and lti_version == 'lti_1p3':
+            return consumer.launch_url
 
-        return lti_1p3_launch_url
+        return self.lti_1p3_launch_url.strip()
 
     def _get_context_for_template(self):
         """
@@ -1886,15 +1981,22 @@ class LtiConsumerXBlock(StudioEditableXBlockMixin, XBlock):
         allowed_attributes = dict(bleach.sanitizer.ALLOWED_ATTRIBUTES, **{'img': ['src', 'alt']})
         sanitized_comment = bleach.clean(self.score_comment, tags=allowed_tags, attributes=allowed_attributes)
 
+        effective = self.get_effective_configuration()
+        runtime_settings = self._get_runtime_settings(effective)
+        lti_version = effective.version
+
         lti_consumer = None
-        # Don't pull from the Django database unless the config_type is one that stores the LTI configuration in the
-        # database.
-        if self.config_type in ("database", "external"):
+        # Only an external configuration still needs the provider's consumer for its launch URLs.
+        if effective.is_external:
             lti_consumer = self.get_lti_consumer()
 
-        launch_url = self._get_lti_launch_url(lti_consumer)
-        lti_block_launch_handler = self._get_lti_block_launch_handler()
-        lti_1p3_launch_url = self._get_lti_1p3_launch_url(lti_consumer)
+        launch_url = self._get_lti_launch_url(
+            lti_consumer, runtime_settings, lti_version, effective.is_external,
+        )
+        lti_block_launch_handler = self._get_lti_block_launch_handler(lti_version)
+        lti_1p3_launch_url = self._get_lti_1p3_launch_url(
+            lti_consumer, runtime_settings, lti_version, effective.is_external,
+        )
 
         # The values of ask_to_send_username, ask_to_send_full_name, and ask_to_send_email should only apply if PII
         # sharing is enabled.
@@ -1905,10 +2007,10 @@ class LtiConsumerXBlock(StudioEditableXBlockMixin, XBlock):
             'lti_1p3_launch_url': lti_1p3_launch_url,
             'element_id': self.scope_ids.usage_id.html_id(),
             'element_class': getattr(self, 'category', ''),
-            'launch_target': self.launch_target,
-            'display_name': self.display_name,
+            'launch_target': runtime_settings['launch_target'],
+            'display_name': runtime_settings['display_name'],
             'form_url': lti_block_launch_handler,
-            'hide_launch': self.hide_launch,
+            'hide_launch': runtime_settings['hide_launch'],
             'has_score': self.has_score,
             'weight': self.weight,
             'module_score': self.module_score,
@@ -1917,13 +2019,13 @@ class LtiConsumerXBlock(StudioEditableXBlockMixin, XBlock):
             'ask_to_send_username': self.ask_to_send_username if pii_sharing_enabled else False,
             'ask_to_send_full_name': self.ask_to_send_full_name if pii_sharing_enabled else False,
             'ask_to_send_email': self.ask_to_send_email if pii_sharing_enabled else False,
-            'button_text': self.button_text,
-            'inline_height': self.inline_height,
-            'modal_vertical_offset': self._get_modal_position_offset(self.modal_height),
-            'modal_horizontal_offset': self._get_modal_position_offset(self.modal_width),
-            'modal_width': self.modal_width,
-            'accept_grades_past_due': self.accept_grades_past_due,
-            'lti_version': self.get_resolved_lti_version(),
+            'button_text': runtime_settings['button_text'],
+            'inline_height': runtime_settings['inline_height'],
+            'modal_vertical_offset': self._get_modal_position_offset(runtime_settings['modal_height']),
+            'modal_horizontal_offset': self._get_modal_position_offset(runtime_settings['modal_width']),
+            'modal_width': runtime_settings['modal_width'],
+            'accept_grades_past_due': runtime_settings['accept_grades_past_due'],
+            'lti_version': lti_version,
         }
 
     def _get_modal_position_offset(self, viewport_percentage):
@@ -1938,8 +2040,9 @@ class LtiConsumerXBlock(StudioEditableXBlockMixin, XBlock):
         Returns:
             float: The css position offset to apply to the modal window
         """
-        if not viewport_percentage:
-            viewport_percentage = 80        # set to default value in case viewport_percentage is None
+        if viewport_percentage is None:
+            # Only an absent value defaults: an explicit 0 is a real size, not "unset".
+            viewport_percentage = 80
         return (100 - viewport_percentage) / 2
 
     def get_outcome_service_url(self, service_name="grade_handler"):
@@ -1966,7 +2069,7 @@ class LtiConsumerXBlock(StudioEditableXBlockMixin, XBlock):
         xblock_body = super().index_dictionary()
 
         index_body = {
-            "display_name": self.display_name,
+            "display_name": self._get_index_display_name(),
             "description": self.description,
         }
 
@@ -1978,6 +2081,22 @@ class LtiConsumerXBlock(StudioEditableXBlockMixin, XBlock):
         xblock_body["content_type"] = "LTI Consumer"
 
         return xblock_body
+
+    def _get_index_display_name(self):
+        """
+        Return the title the LMS index shows.
+
+        An internal placement is indexed under its resolved title. An external reference keeps
+        the block title, which is all that is known about it. A missing configuration returns ''
+        rather than a raw internal block value, because that value is not the resolved title.
+        """
+        try:
+            effective = self.get_effective_configuration()
+        except LtiConfigurationError:
+            return ''
+        if effective.is_external:
+            return self.display_name
+        return effective.display_name or ''
 
     def add_xml_to_node(self, node):
         """

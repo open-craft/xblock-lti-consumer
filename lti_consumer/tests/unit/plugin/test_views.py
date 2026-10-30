@@ -30,6 +30,30 @@ from lti_consumer.tests.test_utils import TestBaseWithPatch, make_xblock
 from lti_consumer.utils import cache_lti_1p3_launch_data
 
 
+def bind_shared_configuration(placement, **values):
+    """Bind an explicit shared configuration to a placement; no signal does it."""
+    values.setdefault('name', 'Shared configuration')
+    values.setdefault('version', LtiConfiguration.LTI_1P3)
+    values.setdefault('context_type', 'site')
+    configuration = ReusableLtiConfiguration.objects.create(**values)
+    LtiConfiguration.objects.filter(pk=placement.pk).update(
+        config_store=LtiConfiguration.CONFIG_ON_DB,
+        reusable_configuration=configuration,
+    )
+    placement.refresh_from_db()
+    return configuration
+
+
+def signing_key():
+    """Return a signing JWK and its PEM public key."""
+    rsa_key = RSA.generate(2048)
+    algo_obj = jwt.get_algorithm_by_name('RS256')
+    private_key = algo_obj.prepare_key(rsa_key.export_key())
+    private_jwk = json.loads(algo_obj.to_jwk(private_key))
+    private_jwk['kid'] = 1
+    return PyJWK.from_dict(private_jwk), rsa_key.public_key().export_key('PEM')
+
+
 @ddt.ddt
 class TestLti1p3KeysetEndpoint(TestBaseWithPatch):
     """
@@ -42,12 +66,12 @@ class TestLti1p3KeysetEndpoint(TestBaseWithPatch):
         self.location = 'block-v1:course+test+2020+type@problem+block@test'
         self.url = f'/lti_consumer/v1/public_keysets/{self.location}'
 
-        # Set up LTI Configuration
+        # Set up LTI Configuration: the placement inherits the shared configuration.
         self.lti_config = LtiConfiguration.objects.create(
-            version=LtiConfiguration.LTI_1P3,
-            config_store=LtiConfiguration.CONFIG_ON_XBLOCK,
             location=UsageKey.from_string(self.location)
         )
+        self.configuration = bind_shared_configuration(self.lti_config)
+        self.configuration.generate_lti_1p3_keys_if_missing()
 
     def test_public_keyset_endpoint(self):
         """
@@ -97,6 +121,43 @@ class TestLti1p3KeysetEndpoint(TestBaseWithPatch):
 
         response = self.client.get(self.url)
         self.assertEqual(response.status_code, 404)
+
+    def test_usage_key_inherits_the_shared_version(self):
+        """A placement with no version override serves its shared configuration's version."""
+        self.assertIsNone(self.lti_config.version)
+        self.assertEqual(self.configuration.version, LtiConfiguration.LTI_1P3)
+
+        response = self.client.get(self.url)
+
+        self.assertEqual(response.status_code, 200)
+
+    def test_registration_route_uses_the_shared_version_only(self):
+        """A placement version never lends itself to the registration route."""
+        passport_url = f'/lti_consumer/v1/public_keysets/{self.configuration.passport_id}'
+        self.lti_config.version = LtiConfiguration.LTI_1P1
+        self.lti_config.save()
+
+        self.assertEqual(self.client.get(passport_url).status_code, 200)
+
+        self.lti_config.version = LtiConfiguration.LTI_1P3
+        self.lti_config.save()
+        self.configuration.version = LtiConfiguration.LTI_1P1
+        self.configuration.save()
+
+        self.assertEqual(self.client.get(passport_url).status_code, 404)
+
+    def test_unbound_placement_is_404_and_creates_nothing(self):
+        """A legacy, unbound placement gets an explicit configuration error."""
+        unbound = LtiConfiguration.objects.create(
+            location=UsageKey.from_string('block-v1:course+test+2020+type@problem+block@unbound'),
+        )
+
+        response = self.client.get(f'/lti_consumer/v1/public_keysets/{unbound.location}')
+
+        self.assertEqual(response.status_code, 404)
+        self.assertEqual(ReusableLtiConfiguration.objects.count(), 1)
+        unbound.refresh_from_db()
+        self.assertIsNone(unbound.reusable_configuration)
 
     def test_public_keyset_endpoint_using_configuration_id_in_url(self):
         """
@@ -195,12 +256,16 @@ class TestLti1p3LaunchGateEndpoint(TestBaseWithPatch):
         self.location = 'block-v1:course+test+2020+type@problem+block@test'
         self.url = '/lti_consumer/v1/launch/'
         self.config = LtiConfiguration(
-            version=LtiConfiguration.LTI_1P3,
             location=self.location,
-            config_store=LtiConfiguration.CONFIG_ON_DB,
             lti_1p3_redirect_uris=["https://tool.example", "http://tool.example/launch"]
         )
         self.config.save()
+        self.configuration = bind_shared_configuration(
+            self.config,
+            lti_1p3_launch_url='http://tool.example/launch',
+            lti_1p3_oidc_url='http://tool.example/oidc',
+        )
+        self.configuration.generate_lti_1p3_keys_if_missing()
 
         self.xblock_attributes = {
             'lti_version': 'lti_1p3',
@@ -256,8 +321,8 @@ class TestLti1p3LaunchGateEndpoint(TestBaseWithPatch):
         )
         self.assertEqual(response.status_code, 404)
 
-        # Rollback
-        self.config.version = LtiConfiguration.LTI_1P3
+        # Rollback to inheritance.
+        self.config.version = None
         self.config.save()
 
     def test_nonexistent_lti_config(self):
@@ -378,6 +443,41 @@ class TestLti1p3LaunchGateEndpoint(TestBaseWithPatch):
             str(response.content)
         )
 
+    def test_launch_inherits_the_shared_version(self):
+        """A placement with no version override launches with the shared version."""
+        self.assertIsNone(self.config.version)
+        self.assertEqual(self.configuration.version, LtiConfiguration.LTI_1P3)
+
+        response = self.client.get(self.url, {
+            "client_id": self.configuration.lti_1p3_client_id,
+            "redirect_uri": "https://tool.example",
+            "state": "state_test_123",
+            "nonce": "nonce",
+            "login_hint": self.launch_data.user_id,
+            "lti_message_hint": self.launch_data_key,
+        })
+
+        self.assertEqual(response.status_code, 200)
+
+    def test_launch_for_unbound_placement_is_404_and_writes_nothing(self):
+        """A legacy placement with no bound configuration gets an explicit error."""
+        unbound = LtiConfiguration(
+            location='block-v1:course+test+2020+type@problem+block@unbound',
+        )
+        unbound.save()
+        self.launch_data.config_id = unbound.config_id
+        launch_data_key = cache_lti_1p3_launch_data(self.launch_data)
+
+        response = self.client.get(self.url, {
+            "login_hint": self.launch_data.user_id,
+            "lti_message_hint": launch_data_key,
+        })
+
+        self.assertEqual(response.status_code, 404)
+        self.assertEqual(ReusableLtiConfiguration.objects.count(), 1)
+        unbound.refresh_from_db()
+        self.assertIsNone(unbound.reusable_configuration)
+
     def test_lti_launch_response(self):
         """
         Check that the right launch response is generated
@@ -386,7 +486,7 @@ class TestLti1p3LaunchGateEndpoint(TestBaseWithPatch):
             "nonce": "nonce-value",
             "state": "hello-world",
             "redirect_uri": "https://tool.example",
-            "client_id": self.config.lti_1p3_client_id,
+            "client_id": self.configuration.lti_1p3_client_id,
             "login_hint": self.launch_data.user_id,
             "lti_message_hint": self.launch_data_key
         }
@@ -416,7 +516,7 @@ class TestLti1p3LaunchGateEndpoint(TestBaseWithPatch):
             side_effect=PreflightRequestValidationFailure()
         ):
             params = {
-                "client_id": self.config.lti_1p3_client_id,
+                "client_id": self.configuration.lti_1p3_client_id,
                 "redirect_ur": "http://tool.example/launch",
                 "state": "state_test_123",
                 "login_hint": self.launch_data.user_id,
@@ -429,7 +529,8 @@ class TestLti1p3LaunchGateEndpoint(TestBaseWithPatch):
         """
         Set up deep linking for data and mocking for testing.
         """
-        self.config.config_store = LtiConfiguration.CONFIG_ON_XBLOCK
+        self.config.lti_advantage_deep_linking_enabled = True
+        self.config.lti_advantage_deep_linking_launch_url = 'http://tool.example/deep-link'
         self.config.save()
 
         self.compat.get_user_role.return_value = user_role
@@ -442,9 +543,6 @@ class TestLti1p3LaunchGateEndpoint(TestBaseWithPatch):
         self.xblock.course.display_name_with_default = 'course_display_name'
         self.xblock.course.display_org_with_default = 'course_display_org'
 
-        # Enable deep linking
-        self.xblock.lti_advantage_deep_linking_enabled = True
-
     def test_launch_callback_endpoint_deep_linking(self):
         """
         Test the LTI 1.3 callback endpoint for deep linking requests.
@@ -452,7 +550,7 @@ class TestLti1p3LaunchGateEndpoint(TestBaseWithPatch):
         self._setup_deep_linking(user_role='staff')
 
         params = {
-            "client_id": self.config.lti_1p3_client_id,
+            "client_id": self.configuration.lti_1p3_client_id,
             "redirect_uri": "http://tool.example/launch",
             "state": "state_test_123",
             "nonce": "nonce",
@@ -493,7 +591,7 @@ class TestLti1p3LaunchGateEndpoint(TestBaseWithPatch):
         self.launch_data.message_type = message_type
 
         params = {
-            "client_id": self.config.lti_1p3_client_id,
+            "client_id": self.configuration.lti_1p3_client_id,
             "redirect_uri": redirect_uri,
             "state": "state_test_123",
             "nonce": "nonce",
@@ -520,7 +618,7 @@ class TestLti1p3LaunchGateEndpoint(TestBaseWithPatch):
         self.launch_data.message_type = "LtiDeepLinkingRequest"
 
         params = {
-            "client_id": self.config.lti_1p3_client_id,
+            "client_id": self.configuration.lti_1p3_client_id,
             "redirect_uri": "http://tool.example/launch",
             "state": "state_test_123",
             "nonce": "nonce",
@@ -556,7 +654,7 @@ class TestLti1p3LaunchGateEndpoint(TestBaseWithPatch):
         launch_data_key = cache_lti_1p3_launch_data(self.launch_data)
 
         params = {
-            "client_id": self.config.lti_1p3_client_id,
+            "client_id": self.configuration.lti_1p3_client_id,
             "redirect_uri": "http://tool.example/launch",
             "state": "state_test_123",
             "nonce": "nonce",
@@ -592,7 +690,7 @@ class TestLti1p3LaunchGateEndpoint(TestBaseWithPatch):
         launch_data_key = cache_lti_1p3_launch_data(self.launch_data)
 
         params = {
-            "client_id": self.config.lti_1p3_client_id,
+            "client_id": self.configuration.lti_1p3_client_id,
             "redirect_uri": "http://tool.example/launch",
             "state": "state_test_123",
             "nonce": "nonce",
@@ -629,7 +727,7 @@ class TestLti1p3LaunchGateEndpoint(TestBaseWithPatch):
         TieredCache.set_all_tiers(session_data_key, "session_data")
 
         params = {
-            "client_id": self.config.lti_1p3_client_id,
+            "client_id": self.configuration.lti_1p3_client_id,
             "redirect_uri": "http://tool.example/launch",
             "state": "state_test_123",
             "nonce": "nonce",
@@ -657,7 +755,7 @@ class TestLti1p3LaunchGateEndpoint(TestBaseWithPatch):
         self.launch_data.proctoring_launch_data = proctoring_launch_data
 
         params = {
-            "client_id": self.config.lti_1p3_client_id,
+            "client_id": self.configuration.lti_1p3_client_id,
             "redirect_uri": "http://tool.example/launch",
             "state": "state_test_123",
             "nonce": "nonce",
@@ -676,7 +774,7 @@ class TestLti1p3LaunchGateEndpoint(TestBaseWithPatch):
         """
         self.launch_data.custom_parameters = ['test=test']
         params = {
-            'client_id': self.config.lti_1p3_client_id,
+            'client_id': self.configuration.lti_1p3_client_id,
             'redirect_uri': 'http://tool.example/launch',
             'state': 'state_test_123',
             'nonce': 'nonce',
@@ -696,7 +794,7 @@ class TestLti1p3LaunchGateEndpoint(TestBaseWithPatch):
         """
         self.launch_data.custom_parameters = {}
         params = {
-            'client_id': self.config.lti_1p3_client_id,
+            'client_id': self.configuration.lti_1p3_client_id,
             'redirect_uri': 'http://tool.example/launch',
             'state': 'state_test_123',
             'nonce': 'nonce',
@@ -720,18 +818,11 @@ class TestLti1p3AccessTokenEndpoint(TestBaseWithPatch):
         super().setUp()
 
         location = 'block-v1:course+test+2020+type@problem+block@test'
-        self.config = LtiConfiguration(version=LtiConfiguration.LTI_1P3, location=location)
+        self.config = LtiConfiguration(location=location)
         self.config.save()
+        self.configuration = bind_shared_configuration(self.config)
         self.url = reverse('lti_consumer:lti_consumer.access_token', args=[str(self.config.passport_id)])
-        # Generate RSA and save exports
-        rsa_key = RSA.generate(2048)
-        algo_obj = jwt.get_algorithm_by_name('RS256')
-        private_key = algo_obj.prepare_key(rsa_key.export_key())
-        private_jwk = json.loads(algo_obj.to_jwk(private_key))
-        private_jwk['kid'] = 1
-        self.key = PyJWK.from_dict(private_jwk)
-        self.public_key = rsa_key.public_key().export_key('PEM')
-        self.configuration = self.config.reusable_configuration
+        self.key, self.public_key = signing_key()
         self.configuration.lti_1p3_tool_public_key = self.public_key.decode()
         self.configuration.save()
         # Signing keys are written up front: the token endpoint must not generate them.
@@ -865,6 +956,93 @@ class TestLti1p3AccessTokenEndpoint(TestBaseWithPatch):
         """
         response = self.client.post(reverse(url, args=args))
         self.assertEqual(response.status_code, 404)
+
+    def test_access_token_usage_route_inherits_the_shared_version(self):
+        """The usage route resolves the version, so no placement override is needed."""
+        self.assertIsNone(self.config.version)
+        body = urllib.parse.urlencode(self.get_body(create_jwt(self.key, {})))
+
+        response = self.client.post(
+            reverse('lti_consumer:lti_consumer.access_token_via_location', args=[str(self.config.location)]),
+            data=body,
+            content_type='application/json',
+        )
+
+        self.assertEqual(response.status_code, 200)
+
+    def test_access_token_registration_route_uses_the_shared_version_only(self):
+        """A placement override never lends its version to the registration route."""
+        self.config.version = LtiConfiguration.LTI_1P3
+        self.config.save()
+        self.configuration.version = LtiConfiguration.LTI_1P1
+        self.configuration.save()
+
+        response = self.client.post(self.url)
+
+        self.assertEqual(response.status_code, 404)
+        self.assertEqual(response.json(), {'error': 'invalid_lti_version'})
+
+    def _bind_frozen_tool_key(self):
+        """Give the placement its own historical tool verification pair."""
+        frozen_key, frozen_public_key = signing_key()
+        self.config.frozen_lti_1p3_tool_public_key = frozen_public_key.decode()
+        self.config.frozen_lti_1p3_tool_keyset_url = ''
+        self.config.save()
+        return frozen_key
+
+    def test_access_token_usage_route_verifies_with_the_frozen_pair(self):
+        """A placement request trusts the historical pair, not the shared one."""
+        frozen_key = self._bind_frozen_tool_key()
+        usage_url = reverse(
+            'lti_consumer:lti_consumer.access_token_via_location', args=[str(self.config.location)],
+        )
+
+        accepted = self.client.post(
+            usage_url,
+            data=urllib.parse.urlencode(self.get_body(create_jwt(frozen_key, {}))),
+            content_type='application/json',
+        )
+        rejected = self.client.post(
+            usage_url,
+            data=urllib.parse.urlencode(self.get_body(create_jwt(self.key, {}))),
+            content_type='application/json',
+        )
+
+        self.assertEqual(accepted.status_code, 200)
+        self.assertEqual(rejected.status_code, 400)
+        self.assertEqual(rejected.json(), {'error': 'invalid_client'})
+
+    def test_access_token_registration_route_verifies_with_the_shared_pair(self):
+        """A registration request trusts the shared pair, not a placement's frozen one."""
+        frozen_key = self._bind_frozen_tool_key()
+
+        accepted = self.client.post(
+            self.url,
+            data=urllib.parse.urlencode(self.get_body(create_jwt(self.key, {}))),
+            content_type='application/json',
+        )
+        rejected = self.client.post(
+            self.url,
+            data=urllib.parse.urlencode(self.get_body(create_jwt(frozen_key, {}))),
+            content_type='application/json',
+        )
+
+        self.assertEqual(accepted.status_code, 200)
+        self.assertEqual(rejected.status_code, 400)
+        self.assertEqual(rejected.json(), {'error': 'invalid_client'})
+
+    def test_access_token_for_unbound_placement_is_404(self):
+        """A legacy, unbound placement gets an explicit configuration error."""
+        unbound = LtiConfiguration.objects.create(
+            location='block-v1:course+test+2020+type@problem+block@unbound',
+        )
+
+        response = self.client.post(
+            reverse('lti_consumer:lti_consumer.access_token_via_location', args=[str(unbound.location)]),
+        )
+
+        self.assertEqual(response.status_code, 404)
+        self.assertEqual(ReusableLtiConfiguration.objects.count(), 1)
 
     def test_verify_lti_version_is_1p3(self):
         """

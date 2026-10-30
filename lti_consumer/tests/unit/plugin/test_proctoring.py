@@ -18,7 +18,7 @@ from lti_consumer.lti_1p3.exceptions import (
     NoSuitableKeys,
 )
 from lti_consumer.lti_1p3.key_handlers import PlatformKeyHandler
-from lti_consumer.models import LtiConfiguration
+from lti_consumer.models import LtiConfiguration, ReusableLtiConfiguration
 from lti_consumer.tests.test_utils import TestBaseWithPatch
 from lti_consumer.utils import get_data_from_cache
 
@@ -36,13 +36,23 @@ class TestLti1p3ProctoringStartProctoringAssessmentEndpoint(TestBaseWithPatch):
         self._setup_user()
 
         self.resource_link_id = "block-v1:course+test+2020+type@problem+block@test"
-        # Set up an LtiConfiguration instance for the integration.
+        # Set up a placement that inherits its version from an explicitly bound shared
+        # configuration; nothing binds a placement on save any more.
         self.lti_config = LtiConfiguration.objects.create(
             location=self.resource_link_id,
-            version=LtiConfiguration.LTI_1P3,
             lti_1p3_proctoring_enabled=True,
             config_store=LtiConfiguration.CONFIG_ON_DB,
         )
+        self.configuration = ReusableLtiConfiguration.objects.create(
+            name='Shared configuration',
+            version=LtiConfiguration.LTI_1P3,
+            context_type='course',
+            context_key='course-v1:testU+DemoX+Demo_Course',
+        )
+        LtiConfiguration.objects.filter(pk=self.lti_config.pk).update(
+            reusable_configuration=self.configuration,
+        )
+        self.lti_config.refresh_from_db()
 
         # Set up cached data necessary for this endpoint: launch_data and session_data.
         self._setup_cached_data()
@@ -52,8 +62,10 @@ class TestLti1p3ProctoringStartProctoringAssessmentEndpoint(TestBaseWithPatch):
         self.private_key = RSA.generate(2048)
         self.public_key = self.private_key.publickey().export_key().decode()
 
-        self.lti_config.reusable_configuration.lti_1p3_tool_public_key = self.public_key
-        self.lti_config.save()
+        # Registration owns the tool verification pair the endpoint resolves.
+        self.configuration.lti_1p3_tool_public_key = self.public_key
+        self.configuration.save()
+        self.configuration.generate_lti_1p3_keys_if_missing()
 
     def _setup_user(self):
         """Sets up the requesting user instance."""

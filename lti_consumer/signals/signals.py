@@ -68,17 +68,18 @@ def publish_grade_on_score_update(sender, instance, **kwargs):  # pylint: disabl
     try:
         # Load block using LMS APIs and check if the block is graded and still accept grades.
         block = compat.load_block_as_user(line_item.resource_link_id)
-        if not block.has_score:
+        is_graded = block.is_graded()
+        if not is_graded:
             log.info(
                 "LTI AGS grade publish skipped: score=%r resource_link_id=%s has_score=%s.",
                 instance,
                 line_item.resource_link_id,
-                block.has_score,
+                is_graded,
             )
         else:
             # Only evaluated when the block is graded, and reused by the log below.
             is_past_due = block.is_past_due()
-            if not is_past_due or block.accept_grades_past_due:
+            if not is_past_due or block.accepts_grades_after_due_date():
                 # Map external ID to platform user
                 user = compat.get_user_from_external_user_id(instance.user_id)
 
@@ -103,9 +104,9 @@ def publish_grade_on_score_update(sender, instance, **kwargs):  # pylint: disabl
                     "is_past_due=%s accept_grades_past_due=%s.",
                     instance,
                     line_item.resource_link_id,
-                    block.has_score,
+                    is_graded,
                     is_past_due,
-                    block.accept_grades_past_due,
+                    block.accepts_grades_after_due_date(),
                 )
 
     # This is a catch all exception to catch and log any issues related to loading the block
@@ -118,17 +119,6 @@ def publish_grade_on_score_update(sender, instance, **kwargs):  # pylint: disabl
             exc,
         )
         raise exc
-
-
-# Temporary legacy bridge: the block-owned config flow saves placements without an
-# explicit reusable_configuration binding, so bind one on save. The target flow creates
-# reusable configurations first and Studio selects an existing row; selection is not
-# implemented yet.
-# shortcut: remove once Studio selection/binding is wired and legacy unbound placements
-# have a conversion/compatibility path.
-@receiver(post_save, sender=LtiConfiguration, dispatch_uid='create_lti_1p3_passport')
-def create_lti_1p3_passport(sender, instance: LtiConfiguration, **kwargs):  # pylint: disable=unused-argument
-    instance.get_or_create_reusable_configuration()
 
 
 @receiver(SignalHandler.pre_item_delete if SignalHandler else [])

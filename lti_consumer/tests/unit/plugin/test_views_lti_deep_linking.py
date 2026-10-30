@@ -11,7 +11,7 @@ from rest_framework.test import APITransactionTestCase
 
 from lti_consumer.data import Lti1p3LaunchData
 from lti_consumer.lti_xblock import LtiConsumerXBlock
-from lti_consumer.models import LtiConfiguration, LtiDlContentItem
+from lti_consumer.models import LtiConfiguration, LtiDlContentItem, ReusableLtiConfiguration
 from lti_consumer.tests.test_utils import TestBaseWithPatch, make_xblock
 from lti_consumer.utils import cache_lti_1p3_launch_data
 
@@ -23,19 +23,38 @@ class LtiDeepLinkingTestCase(TestBaseWithPatch, APITransactionTestCase):
     def setUp(self):
         super().setUp()
 
-        # We define the XBlock first in order to create an LtiConfiguration instance, which is used to generate
-        # LTI 1.3 keys. Later, we set the necessary XBlock attributes.
+        # We define the XBlock first in order to create an LtiConfiguration instance. Later, we set the
+        # necessary XBlock attributes.
         self.xblock = make_xblock('lti_consumer', LtiConsumerXBlock, {})
 
-        # Create configuration
+        # Create a placement that inherits its version from an explicitly bound shared
+        # configuration; nothing binds a placement on save any more.
         self.lti_config = LtiConfiguration.objects.create(
             location=self.xblock.scope_ids.usage_id,
-            version=LtiConfiguration.LTI_1P3,
         )
+        self.configuration = ReusableLtiConfiguration.objects.create(
+            name='Shared configuration',
+            version=LtiConfiguration.LTI_1P3,
+            context_type='site',
+            lti_1p3_launch_url='http://tool.example/launch',
+            lti_1p3_oidc_url='http://tool.example/oidc',
+            lti_advantage_deep_linking_enabled=True,
+            lti_advantage_deep_linking_launch_url='http://tool.example/deep_link_launch',
+        )
+        LtiConfiguration.objects.filter(pk=self.lti_config.pk).update(
+            config_store=LtiConfiguration.CONFIG_ON_DB,
+            reusable_configuration=self.configuration,
+        )
+        self.lti_config.refresh_from_db()
+        self.configuration.generate_lti_1p3_keys_if_missing()
 
         # Create custom LTI Block
         rsa_key = RSA.import_key(self.lti_config.lti_1p3_private_key)
         self.public_key = rsa_key.publickey().export_key()
+        # Registration owns tool verification; the tests sign with the platform key, so the
+        # bound configuration trusts that same public key.
+        self.configuration.lti_1p3_tool_public_key = self.public_key.decode()
+        self.configuration.save()
 
         self.xblock_attributes = {
             'lti_version': 'lti_1p3',

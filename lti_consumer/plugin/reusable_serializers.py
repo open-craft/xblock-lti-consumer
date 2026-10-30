@@ -76,6 +76,7 @@ class ReusableDefaultsInputSerializer(StrictSerializer):
     modal_width = serializers.IntegerField(required=False)
     launch_button_text = serializers.CharField(required=False, allow_blank=True)
     send_extra_parameters = serializers.BooleanField(required=False)
+    hide_external_tool = serializers.BooleanField(required=False)
     custom_parameters = serializers.ListField(child=serializers.CharField(allow_blank=True), required=False)
 
 
@@ -182,6 +183,7 @@ class ReusableDetailSerializer(ReusableListSerializer):
     modal_width = serializers.IntegerField(read_only=True)
     launch_button_text = serializers.CharField(read_only=True)
     send_extra_parameters = serializers.BooleanField(read_only=True)
+    hide_external_tool = serializers.BooleanField(read_only=True)
     custom_parameters = serializers.ListField(child=serializers.CharField(), read_only=True)
     deep_linking_launch_url = serializers.CharField(source='lti_advantage_deep_linking_launch_url', read_only=True)
 

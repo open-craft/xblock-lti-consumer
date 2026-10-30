@@ -45,11 +45,28 @@ class LtiConfigurationInline(admin.TabularInline):
 @admin.register(LtiConfiguration)
 class LtiConfigurationAdmin(admin.ModelAdmin):
     """
-    Admin view for LtiConfiguration models.
+    Placement inspection admin.
 
-    Makes the location field read-only to avoid issues.
+    The #724 adapter boundary: ordinary overrides and historical/frozen columns are
+    resolver storage, never admin input. This explicit allowlist keeps them out of the
+    form, so an empty CharField cannot become an explicit '' and no credential or
+    tool-verification material is rendered. Rebinding and clearing historical values
+    belong to the deferred adoption task, so the binding and source stay read-only.
     """
-    readonly_fields = ('location', 'config_id')
+    fields = (
+        'location',
+        'config_id',
+        'config_store',
+        'external_id',
+        'reusable_configuration',
+        'lti_1p3_proctoring_enabled',
+    )
+    readonly_fields = ('location', 'config_id', 'config_store', 'external_id', 'reusable_configuration')
+
+    def has_add_permission(self, request):
+        # A placement is created by attach/conversion with its binding; the admin
+        # supplies neither, so an add form could only produce an unusable row.
+        return False
 
 
 @admin.register(ReusableLtiConfiguration)
@@ -104,6 +121,7 @@ class ReusableLtiConfigurationAdmin(admin.ModelAdmin):
                 'enable_grading',
                 'grade_weight',
                 'accept_grades_after_due_date',
+                'hide_external_tool',
                 'open_tool_in',
                 'inline_height',
                 'modal_height',

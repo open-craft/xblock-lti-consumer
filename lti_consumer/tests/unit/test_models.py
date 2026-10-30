@@ -3,7 +3,8 @@ Unit tests for LTI models.
 """
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
-from unittest.mock import call, patch
+from types import SimpleNamespace
+from unittest.mock import Mock, call, patch
 
 import ddt
 from ccx_keys.locator import CCXBlockUsageLocator, CCXLocator
@@ -11,8 +12,10 @@ from Cryptodome.PublicKey import RSA
 from django.core.exceptions import ValidationError
 from django.db.models.deletion import ProtectedError
 from edx_django_utils.cache import RequestCache
+from opaque_keys.edx.keys import UsageKey
 from opaque_keys.edx.locator import CourseLocator
 
+from lti_consumer.effective import LtiConfigurationError, PLACEMENT_CONFIGURATION_FIELDS
 from lti_consumer.lti_xblock import LtiConsumerXBlock
 from lti_consumer.models import (
     CourseAllowPIISharingInLTIFlag,
@@ -38,7 +41,7 @@ class TestLtiConfigurationModel(TestBaseWithPatch):
 
         # Generate RSA and save exports
         rsa_key = RSA.generate(2048)
-        self.public_key = rsa_key.publickey().export_key()
+        self.public_key = rsa_key.publickey().export_key().decode('utf-8')
 
         self.xblock_attributes = {
             'lti_version': 'lti_1p3',
@@ -63,21 +66,43 @@ class TestLtiConfigurationModel(TestBaseWithPatch):
         self._load_block_patch = patcher.start()
         self._load_block_patch.return_value = self.xblock
 
+        # Bound configurations, created explicitly: nothing binds a placement on save.
+        self.configuration_1p3 = ReusableLtiConfiguration.objects.create(
+            name='Shared 1.3 configuration',
+            version=ReusableLtiConfiguration.LTI_1P3,
+            context_type='course',
+            context_key='course-v1:edX+DemoX+Demo_Course',
+            lti_1p3_launch_url=LAUNCH_URL,
+            lti_1p3_oidc_url='http://tool.example/oidc',
+            lti_1p3_tool_public_key=self.public_key,
+        )
+        self.configuration_1p1 = ReusableLtiConfiguration.objects.create(
+            name='Shared 1.1 configuration',
+            version=ReusableLtiConfiguration.LTI_1P1,
+            context_type='course',
+            context_key='course-v1:edX+DemoX+Demo_Course',
+            lti_1p1_launch_url=LAUNCH_URL,
+            lti_1p1_client_key='shared-key',
+            lti_1p1_client_secret='shared-secret',
+        )
+
         # Creates an LTI configuration objects for testing
         self.lti_1p1_config = LtiConfiguration.objects.create(
             location=self.xblock.scope_ids.usage_id,
-            version=LtiConfiguration.LTI_1P1
+            config_store=LtiConfiguration.CONFIG_ON_DB,
+            reusable_configuration=self.configuration_1p1,
         )
 
         self.lti_1p3_config = LtiConfiguration.objects.create(
             location=self.xblock_1.scope_ids.usage_id,
-            version=LtiConfiguration.LTI_1P3
+            config_store=LtiConfiguration.CONFIG_ON_DB,
+            reusable_configuration=self.configuration_1p3,
         )
 
         self.lti_1p3_config_db = LtiConfiguration.objects.create(
             location=self.xblock_2.scope_ids.usage_id,
-            version=LtiConfiguration.LTI_1P3,
             config_store=LtiConfiguration.CONFIG_ON_DB,
+            reusable_configuration=self.configuration_1p3,
             lti_advantage_ags_mode='programmatic',
             lti_advantage_deep_linking_enabled=True,
         )
@@ -100,11 +125,55 @@ class TestLtiConfigurationModel(TestBaseWithPatch):
         """
         defaults = kwargs
         defaults["version"] = LtiConfiguration.LTI_1P3
+        if defaults.get('config_store') == LtiConfiguration.CONFIG_ON_DB:
+            defaults.setdefault('reusable_configuration', self.configuration_1p3)
         config, _ = LtiConfiguration.objects.update_or_create(
             location=self.xblock_1.scope_ids.usage_id,
             defaults=defaults,
         )
         return config
+
+    def test_full_clean_accepts_inherited_nulls_without_side_effects(self):
+        """
+        A bound placement with every override NULL is valid, and validation stays read-only.
+
+        NULL means inherit, so field validation must accept it (blank=True). Resolving the
+        configuration during validation must not create a row, line item or signing key,
+        nor load the block.
+        """
+        shared = ReusableLtiConfiguration.objects.create(
+            name='Validated shared configuration',
+            version=ReusableLtiConfiguration.LTI_1P3,
+            context_type='course',
+            context_key='course-v1:edX+DemoX+Demo_Course',
+            lti_1p3_launch_url=LAUNCH_URL,
+            lti_1p3_oidc_url='http://tool.example/oidc',
+            lti_advantage_ags_mode='disabled',
+        )
+        placement = LtiConfiguration(
+            config_store=LtiConfiguration.CONFIG_ON_DB,
+            reusable_configuration=shared,
+            location=UsageKey.from_string(
+                'block-v1:edX+DemoX+Demo_Course+type@lti_consumer+block@full-clean',
+            ),
+        )
+        self.assertTrue(all(getattr(placement, name) is None for name in PLACEMENT_CONFIGURATION_FIELDS))
+        placement_count = LtiConfiguration.objects.count()
+        lineitem_count = LtiAgsLineItem.objects.count()
+        stored_keys = (shared.lti_1p3_internal_private_key, shared.lti_1p3_internal_public_jwk)
+
+        with patch('lti_consumer.plugin.compat.load_enough_xblock') as load_block:
+            placement.full_clean()
+
+        load_block.assert_not_called()
+        self.assertEqual(LtiConfiguration.objects.count(), placement_count)
+        self.assertFalse(LtiConfiguration.objects.filter(location=placement.location).exists())
+        self.assertEqual(LtiAgsLineItem.objects.count(), lineitem_count)
+        shared.refresh_from_db()
+        self.assertEqual(
+            (shared.lti_1p3_internal_private_key, shared.lti_1p3_internal_public_jwk),
+            stored_keys,
+        )
 
     @patch("lti_consumer.models.LtiConfiguration._get_lti_1p3_consumer")
     @patch("lti_consumer.models.LtiConfiguration._get_lti_1p1_consumer")
@@ -118,14 +187,22 @@ class TestLtiConfigurationModel(TestBaseWithPatch):
         self.lti_1p3_config.get_lti_consumer()
         lti_1p3_mock.assert_called()
 
-    def test_get_lti_1p3_consumer_invalid_config_store(self):
+    def test_get_lti_consumer_rejects_a_placement_without_a_binding(self):
         """
-        Check that NotImplementedError is raised when config_store is not a valid value.
+        A legacy or unbound placement has no resolvable settings, and no block fallback.
         """
-        self.lti_1p3_config.config_store = 'edX'
-
-        with self.assertRaises(NotImplementedError):
-            self.lti_1p3_config.get_lti_consumer()
+        for config_store, reusable_configuration in (
+            (LtiConfiguration.CONFIG_ON_XBLOCK, self.configuration_1p3),
+            (LtiConfiguration.CONFIG_ON_DB, None),
+            ('edX', self.configuration_1p3),
+        ):
+            with self.subTest(config_store=config_store):
+                placement = LtiConfiguration(
+                    config_store=config_store,
+                    reusable_configuration=reusable_configuration,
+                )
+                with self.assertRaises(LtiConfigurationError):
+                    placement.get_lti_consumer()
 
     @patch("lti_consumer.models.LtiConsumer1p1")
     @patch("lti_consumer.models.get_external_config_from_filter")
@@ -187,14 +264,12 @@ class TestLtiConfigurationModel(TestBaseWithPatch):
 
     def test_get_effective_version_non_external(self):
         """
-        Non-external config_store returns the stored version directly.
+        An internal placement resolves its own override over the bound configuration's version.
         """
-        config = LtiConfiguration.objects.create(
-            version=LtiConfiguration.LTI_1P3,
-            config_store=LtiConfiguration.CONFIG_ON_XBLOCK,
-            location='block-v1:course+test+2020+type@problem+block@effver-non-ext',
-        )
-        self.assertEqual(config.get_effective_version(), LtiConfiguration.LTI_1P3)
+        self.assertEqual(self.lti_1p3_config.get_effective_version(), LtiConfiguration.LTI_1P3)
+
+        self.lti_1p3_config.version = LtiConfiguration.LTI_1P1
+        self.assertEqual(self.lti_1p3_config.get_effective_version(), LtiConfiguration.LTI_1P1)
 
     def test_repr(self):
         """
@@ -212,7 +287,6 @@ class TestLtiConfigurationModel(TestBaseWithPatch):
         )
 
     @ddt.data(
-        LtiConfiguration.CONFIG_ON_XBLOCK,
         LtiConfiguration.CONFIG_ON_DB,
         LtiConfiguration.CONFIG_EXTERNAL,
     )
@@ -249,7 +323,6 @@ class TestLtiConfigurationModel(TestBaseWithPatch):
         )
 
     @ddt.data(
-        {'config_store': LtiConfiguration.CONFIG_ON_XBLOCK, 'expected_value': 'XBlock'},
         {'config_store': LtiConfiguration.CONFIG_ON_DB, 'expected_value': 'disabled'},
         {'config_store': LtiConfiguration.CONFIG_EXTERNAL, 'expected_value': 'external'},
     )
@@ -262,12 +335,9 @@ class TestLtiConfigurationModel(TestBaseWithPatch):
         filter_mock.return_value = {'lti_advantage_ags_mode': 'external'}
         config = self._get_1p3_config(config_store=config_store, lti_advantage_ags_mode='disabled')
 
-        self.xblock.lti_advantage_ags_mode = 'XBlock'
-
         self.assertEqual(config.get_lti_advantage_ags_mode(), expected_value)
 
     @ddt.data(
-        LtiConfiguration.CONFIG_ON_XBLOCK,
         LtiConfiguration.CONFIG_ON_DB,
         LtiConfiguration.CONFIG_EXTERNAL,
     )
@@ -308,7 +378,6 @@ class TestLtiConfigurationModel(TestBaseWithPatch):
         )
 
     @ddt.data(
-        LtiConfiguration.CONFIG_ON_XBLOCK,
         LtiConfiguration.CONFIG_ON_DB,
         LtiConfiguration.CONFIG_EXTERNAL,
     )
@@ -332,7 +401,6 @@ class TestLtiConfigurationModel(TestBaseWithPatch):
         self.assertTrue(consumer.dl)
 
     @ddt.data(
-        {'config_store': LtiConfiguration.CONFIG_ON_XBLOCK, 'expected_value': False},
         {'config_store': LtiConfiguration.CONFIG_ON_DB, 'expected_value': True},
         {'config_store': LtiConfiguration.CONFIG_EXTERNAL, 'expected_value': True},
     )
@@ -345,12 +413,9 @@ class TestLtiConfigurationModel(TestBaseWithPatch):
         filter_mock.return_value = {'lti_advantage_deep_linking_enabled': True}
         config = self._get_1p3_config(config_store=config_store, lti_advantage_deep_linking_enabled=True)
 
-        self.xblock.lti_advantage_deep_linking_enabled = False
-
         self.assertEqual(config.get_lti_advantage_deep_linking_enabled(), expected_value)
 
     @ddt.data(
-        {'config_store': LtiConfiguration.CONFIG_ON_XBLOCK, 'expected_value': 'XBlock'},
         {'config_store': LtiConfiguration.CONFIG_ON_DB, 'expected_value': 'database'},
         {'config_store': LtiConfiguration.CONFIG_EXTERNAL, 'expected_value': 'external'},
     )
@@ -363,12 +428,9 @@ class TestLtiConfigurationModel(TestBaseWithPatch):
         filter_mock.return_value = {'lti_advantage_deep_linking_launch_url': 'external'}
         config = self._get_1p3_config(config_store=config_store, lti_advantage_deep_linking_launch_url='database')
 
-        self.xblock.lti_advantage_deep_linking_launch_url = 'XBlock'
-
         self.assertEqual(config.get_lti_advantage_deep_linking_launch_url(), expected_value)
 
     @ddt.data(
-        {'config_store': LtiConfiguration.CONFIG_ON_XBLOCK, 'expected_value': False},
         {'config_store': LtiConfiguration.CONFIG_ON_DB, 'expected_value': True},
         {'config_store': LtiConfiguration.CONFIG_EXTERNAL, 'expected_value': True},
     )
@@ -381,59 +443,50 @@ class TestLtiConfigurationModel(TestBaseWithPatch):
         filter_mock.return_value = {'lti_advantage_enable_nrps': True}
         config = self._get_1p3_config(config_store=config_store, lti_advantage_enable_nrps=True)
 
-        self.xblock.lti_advantage_enable_nrps = False
-
         self.assertEqual(config.get_lti_advantage_nrps_enabled(), expected_value)
 
-    def test_generate_private_key(self):
+    def test_reads_never_generate_signing_keys(self):
         """
-        Checks if a private key is correctly generated.
+        Reading the platform identity returns stored material and generates nothing.
         """
-        lti_config = LtiConfiguration.objects.create(
-            version=LtiConfiguration.LTI_1P3,
-            config_store=LtiConfiguration.CONFIG_ON_XBLOCK,
-            location='block-v1:course+test+2020+type@problem+block@test'
-        )
+        self.assertEqual(self.configuration_1p3.lti_1p3_internal_private_key, '')
 
-        # Check that model fields are empty
-        self.assertFalse(lti_config.reusable_configuration.lti_1p3_internal_private_key)
-        self.assertFalse(lti_config.reusable_configuration.lti_1p3_internal_private_key_id)
-        self.assertFalse(lti_config.reusable_configuration.lti_1p3_internal_public_jwk)
+        self.assertEqual(self.lti_1p3_config.lti_1p3_private_key, '')
+        self.assertEqual(self.lti_1p3_config.lti_1p3_private_key_id, '')
+        self.assertEqual(self.lti_1p3_config.lti_1p3_public_jwk, {})
 
-        # Create and retrieve public keys
-        _ = lti_config.lti_1p3_public_jwk
-
-        # Check if keys were created
-        self.assertTrue(lti_config.reusable_configuration.lti_1p3_internal_private_key)
-        self.assertTrue(lti_config.reusable_configuration.lti_1p3_internal_private_key_id)
-        self.assertTrue(lti_config.reusable_configuration.lti_1p3_internal_public_jwk)
+        self.configuration_1p3.refresh_from_db()
+        self.assertEqual(self.configuration_1p3.lti_1p3_internal_private_key, '')
+        self.assertEqual(self.configuration_1p3.lti_1p3_internal_private_key_id, '')
+        self.assertEqual(self.configuration_1p3.lti_1p3_internal_public_jwk, '')
 
     def test_generate_public_key_only(self):
         """
-        Checks if a public key is correctly regenerated from a private key
+        The explicit generator repairs a missing public key from the stored private key.
         """
-        lti_config = LtiConfiguration.objects.create(
-            version=LtiConfiguration.LTI_1P3,
-            config_store=LtiConfiguration.CONFIG_ON_XBLOCK,
-            location='block-v1:course+test+2020+type@problem+block@test'
-        )
-        # Create and retrieve public keys
-        public_key = lti_config.lti_1p3_public_jwk.copy()
-        lti_config.reusable_configuration.lti_1p3_internal_public_jwk = ""
-        lti_config.reusable_configuration.save()
+        self.configuration_1p3.generate_lti_1p3_keys_if_missing()
+        public_key = self.lti_1p3_config.lti_1p3_public_jwk.copy()
 
-        # Retrieve public key and check that it was correctly regenerated
-        regenerated_public_key = lti_config.lti_1p3_public_jwk
-        lti_config.refresh_from_db()
-        self.assertEqual(regenerated_public_key, public_key)
+        self.configuration_1p3.lti_1p3_internal_public_jwk = ""
+        self.configuration_1p3.save()
+        self.assertEqual(self.lti_1p3_config.lti_1p3_public_jwk, {})
+
+        self.configuration_1p3.generate_lti_1p3_keys_if_missing()
+        self.configuration_1p3.refresh_from_db()
+        self.assertEqual(self.lti_1p3_config.lti_1p3_public_jwk, public_key)
 
     def test_clean(self):
+        # A legacy or unbound placement has no resolvable configuration, and no block fallback.
         self.lti_1p3_config.config_store = self.lti_1p3_config.CONFIG_ON_XBLOCK
-        self.lti_1p3_config.location = None
-
         with self.assertRaises(ValidationError):
             self.lti_1p3_config.clean()
 
+        self.lti_1p3_config.config_store = self.lti_1p3_config.CONFIG_ON_DB
+        self.lti_1p3_config.reusable_configuration = None
+        with self.assertRaises(ValidationError):
+            self.lti_1p3_config.clean()
+
+        # An external reference needs the "<app>:<slug>" form.
         self.lti_1p3_config.config_store = self.lti_1p3_config.CONFIG_EXTERNAL
         self.lti_1p3_config.external_id = None
 
@@ -445,6 +498,9 @@ class TestLtiConfigurationModel(TestBaseWithPatch):
         with self.assertRaises(ValidationError):
             self.lti_1p3_config.clean()
 
+        # A bound local configuration validates.
+        self.lti_1p3_config.refresh_from_db()
+        self.lti_1p3_config.clean()
         self.lti_1p3_config.config_store = self.lti_1p3_config.CONFIG_ON_DB
 
         # Legacy, incomplete and LTI 1.1 configurations may carry no key material at all.
@@ -467,28 +523,111 @@ class TestLtiConfigurationModel(TestBaseWithPatch):
         passport.lti_1p3_tool_keyset_url = 'https://tool.example/jwks'
         passport.clean()
 
+        # Proctoring needs the platform signing material only a local configuration owns.
         self.lti_1p3_config.lti_1p3_proctoring_enabled = True
-        self.lti_1p3_config.external_id = 'test_id'
+        self.lti_1p3_config.external_id = 'test-app:test-slug'
+        self.lti_1p3_config.version = self.lti_1p3_config.LTI_1P3
 
-        for config_store in [self.lti_1p3_config.CONFIG_ON_XBLOCK, self.lti_1p3_config.CONFIG_EXTERNAL]:
-            self.lti_1p3_config.config_store = config_store
-            with self.assertRaises(ValidationError):
-                self.lti_1p3_config.clean()
+        self.lti_1p3_config.config_store = self.lti_1p3_config.CONFIG_EXTERNAL
+        with self.assertRaises(ValidationError):
+            self.lti_1p3_config.clean()
+
+    def test_ags_declarative_never_borrows_from_the_block_for_an_internal_placement(self):
+        """
+        An internal placement with no effective grading values uses non-null defaults and
+        never borrows the stale block weight or display name.
+        """
+        self.xblock.weight = 9.5
+        self.xblock.display_name = 'Stale block title'
+        effective = SimpleNamespace(
+            is_external=False,
+            grade_weight=None,
+            display_name=None,
+            value=lambda name: 'declarative' if name == 'lti_advantage_ags_mode' else None,
+        )
+
+        with patch('lti_consumer.models.resolve_lti_configuration', return_value=effective):
+            self.lti_1p3_config._setup_lti_1p3_ags(Mock())  # pylint: disable=protected-access
+
+        lineitem = LtiAgsLineItem.objects.get(lti_configuration=self.lti_1p3_config)
+        self.assertEqual(lineitem.score_maximum, 0)
+        self.assertEqual(lineitem.label, '')
+
+    @patch('lti_consumer.models.external_multiple_launch_urls_enabled', return_value=False)
+    @patch('lti_consumer.models.compat.load_enough_xblock', side_effect=ValueError)
+    def test_ags_declarative_without_a_block_uses_effective_values(self, _load_block, _external_multiple):
+        """
+        A block-less internal placement still uses its effective weight and display name.
+        """
+        self.lti_1p3_config.grade_weight = 0
+        self.lti_1p3_config.display_name = ''
+        self.lti_1p3_config.save()
+
+        self.lti_1p3_config.get_lti_consumer()
+
+        lineitem = LtiAgsLineItem.objects.get(lti_configuration=self.lti_1p3_config)
+        self.assertEqual(lineitem.score_maximum, 0)
+        self.assertEqual(lineitem.label, '')
+
+    @patch('lti_consumer.models.get_external_config_from_filter')
+    @patch('lti_consumer.models.external_multiple_launch_urls_enabled', return_value=False)
+    @patch('lti_consumer.models.compat.load_enough_xblock', side_effect=ValueError)
+    def test_ags_declarative_without_a_block_keeps_the_external_defaults(
+        self, _load_block, _external_multiple, filter_mock,
+    ):
+        """
+        An external placement has no local defaults, so its block-less line item keeps the
+        existing fallback.
+        """
+        filter_mock.return_value = {'lti_advantage_ags_mode': 'declarative'}
+
+        self.lti_1p3_config_external.get_lti_consumer()
+
+        lineitem = LtiAgsLineItem.objects.get(lti_configuration=self.lti_1p3_config_external)
+        self.assertEqual(lineitem.score_maximum, 100)
+        self.assertEqual(lineitem.label, f'LTI Consumer at {self.lti_1p3_config_external.location}')
+
+    def test_unknown_effective_version_is_a_configuration_error(self):
+        """
+        A missing, blank or unknown effective version never falls back to LTI 1.1.
+        """
+        self.configuration_1p3.version = None
+        self.configuration_1p3.save()
+
+        for version in (None, '', 'lti_2p0'):
+            with self.subTest(version=version):
+                self.lti_1p3_config.version = version
+                with self.assertRaises(LtiConfigurationError):
+                    self.lti_1p3_config.get_lti_consumer()
+                with self.assertRaises(ValidationError):
+                    self.lti_1p3_config.clean()
+
+    def test_clean_does_not_create_a_declarative_line_item(self):
+        """Validation resolves settings; it never builds a consumer or writes a line item."""
+        self.lti_1p3_config.lti_advantage_ags_mode = 'declarative'
+        self.lti_1p3_config.save()
+        line_items_before = LtiAgsLineItem.objects.count()
+
+        self.lti_1p3_config.clean()
+
+        self.assertEqual(LtiAgsLineItem.objects.count(), line_items_before)
 
     @ddt.data(
         (LAUNCH_URL, DEEP_LINK_URL, [], [LAUNCH_URL, DEEP_LINK_URL]),
         (LAUNCH_URL, DEEP_LINK_URL, ["http://other.url"], ["http://other.url"]),
     )
     @ddt.unpack
-    def test_get_redirect_uris_for_xblock_model_returns_expected(
+    def test_get_redirect_uris_inherits_the_bound_configuration(
             self, launch_url, deep_link_url, redirect_uris, expected):
         """
-        Returns expected redirect uris for xblock model
+        A NULL placement inherits the shared connection settings, and an empty list stays a value.
         """
-        self.xblock.lti_1p3_launch_url = launch_url
-        self.xblock.lti_advantage_deep_linking_launch_url = deep_link_url
-        self.xblock.lti_1p3_redirect_uris = redirect_uris
+        self.configuration_1p3.lti_1p3_launch_url = launch_url
+        self.configuration_1p3.lti_advantage_deep_linking_launch_url = deep_link_url
+        self.configuration_1p3.lti_1p3_redirect_uris = redirect_uris
+        self.configuration_1p3.save()
 
+        self.assertIsNone(self.lti_1p3_config.lti_1p3_launch_url)
         assert self.lti_1p3_config.get_lti_1p3_redirect_uris() == expected
 
     @ddt.data(
@@ -551,6 +690,10 @@ class TestLtiConfigurationModel(TestBaseWithPatch):
                 version=LtiConfiguration.LTI_1P3,
             )
 
+        # Seeding is explicit; nothing binds a placement on save.
+        config.get_or_create_reusable_configuration()
+        config.refresh_from_db()
+
         # The passport is created and linked to the configuration, which is authoritative.
         self.assertIsNotNone(config.reusable_configuration)
         self.assertEqual(config.reusable_configuration.name, f"Passport of {xblock.display_name}")
@@ -570,6 +713,8 @@ class TestLtiConfigurationModel(TestBaseWithPatch):
             config_store=LtiConfiguration.CONFIG_EXTERNAL,
             external_id='app:slug',
         )
+        config.get_or_create_reusable_configuration()
+        config.refresh_from_db()
 
         self.assertIsNone(config.reusable_configuration)
         self.assertEqual(ReusableLtiConfiguration.objects.count(), before)
@@ -588,6 +733,8 @@ class TestLtiConfigurationModel(TestBaseWithPatch):
         config = LtiConfiguration.objects.create(
             location='block-v1:edX+DemoX+Demo_Course+type@lti_consumer+block@seeded',
         )
+        config.get_or_create_reusable_configuration()
+        config.refresh_from_db()
         passport = config.reusable_configuration
 
         self.assertEqual(passport.version, LtiConfiguration.LTI_1P3)
@@ -611,6 +758,8 @@ class TestLtiConfigurationModel(TestBaseWithPatch):
         config = LtiConfiguration.objects.create(
             location='block-v1:edX+DemoX+Demo_Course+type@lti_consumer+block@keyset',
         )
+        config.get_or_create_reusable_configuration()
+        config.refresh_from_db()
         passport = config.reusable_configuration
 
         self.assertEqual(passport.lti_1p3_tool_key_mode, 'keyset_url')
@@ -632,6 +781,8 @@ class TestLtiConfigurationModel(TestBaseWithPatch):
                 config = LtiConfiguration.objects.create(
                     location=f'block-v1:edX+DemoX+Demo_Course+type@lti_consumer+block@{block_type}',
                 )
+                config.get_or_create_reusable_configuration()
+                config.refresh_from_db()
 
                 self.assertIsNone(config.reusable_configuration.lti_1p3_tool_key_mode)
 
@@ -653,6 +804,8 @@ class TestLtiConfigurationModel(TestBaseWithPatch):
         config = LtiConfiguration.objects.create(
             location='block-v1:edX+DemoX+Demo_Course+type@lti_consumer+block@ccx',
         )
+        config.get_or_create_reusable_configuration()
+        config.refresh_from_db()
 
         self.assertEqual(
             (config.reusable_configuration.context_type, config.reusable_configuration.context_key),
@@ -672,13 +825,22 @@ class TestLtiConfigurationModel(TestBaseWithPatch):
 
     def test_bound_configuration_cannot_be_deleted_while_a_placement_references_it(self):
         """The placement FK protects a configuration that is still bound to a block."""
-        configuration = self.lti_1p3_config.reusable_configuration
+        configuration = ReusableLtiConfiguration.objects.create(
+            name='Protected configuration',
+            version=ReusableLtiConfiguration.LTI_1P3,
+        )
+        placement = LtiConfiguration.objects.create(
+            location='block-v1:edX+DemoX+Demo_Course+type@lti_consumer+block@protected',
+            config_store=LtiConfiguration.CONFIG_ON_DB,
+            reusable_configuration=configuration,
+        )
+
         with self.assertRaises(ProtectedError):
             configuration.delete()
         self.assertTrue(ReusableLtiConfiguration.objects.filter(pk=configuration.pk).exists())
 
-        placement_pk = self.lti_1p3_config.pk
-        self.lti_1p3_config.delete()
+        placement_pk = placement.pk
+        placement.delete()
         self.assertFalse(LtiConfiguration.objects.filter(pk=placement_pk).exists())
         configuration.delete()
         self.assertFalse(ReusableLtiConfiguration.objects.filter(pk=configuration.pk).exists())
@@ -714,7 +876,9 @@ class TestLtiConfigurationModel(TestBaseWithPatch):
         ])
         model_to_dict_mock.assert_called_once_with(
             filter_mock.return_value.first(),
-            ['id', 'config_id', 'location', 'external_config'],
+            ['id', 'config_id', 'location', 'external_config',
+             'reusable_configuration', 'reusable_configuration_id',
+             *PLACEMENT_CONFIGURATION_FIELDS],
         )
         setattr_mock.assert_called_once_with(self.lti_1p3_config, 'test', 'test')
 
@@ -740,7 +904,9 @@ class TestLtiConfigurationModel(TestBaseWithPatch):
         ])
         model_to_dict_mock.assert_called_once_with(
             self.lti_1p3_config,
-            ['id', 'config_id', 'location', 'external_config'],
+            ['id', 'config_id', 'location', 'external_config',
+             'reusable_configuration', 'reusable_configuration_id',
+             *PLACEMENT_CONFIGURATION_FIELDS],
         )
 
     @patch('lti_consumer.models.isinstance', return_value=False)
@@ -762,6 +928,43 @@ class TestLtiConfigurationModel(TestBaseWithPatch):
             f'Failed to query children CCX LTI configurations: '
             f'Failed to parse main LTI configuration location: {self.lti_1p3_config.location}'
         )
+
+    def test_sync_configurations_keeps_the_binding_and_overrides_on_both_sides(self):
+        """
+        CCX sync copies neither the binding nor any ordinary/frozen column, in either direction.
+        """
+        child_configuration = ReusableLtiConfiguration.objects.create(
+            name='CCX configuration',
+            version=ReusableLtiConfiguration.LTI_1P3,
+            context_type='course',
+            context_key='course-v1:edX+DemoX+Demo_Course',
+        )
+        self.lti_1p3_config.display_name = 'main override'
+        self.lti_1p3_config.lti_1p1_client_secret = 'main secret'
+        self.lti_1p3_config.save()
+
+        block_id = str(self.lti_1p3_config.location).split('@')[-1]
+        child = LtiConfiguration.objects.create(
+            location=f'ccx-block-v1:edX+DemoX+Demo_Course+ccx@1+type@lti_consumer+block@{block_id}',
+            config_store=LtiConfiguration.CONFIG_ON_DB,
+            reusable_configuration=child_configuration,
+            display_name='child override',
+            lti_1p1_client_secret='child secret',
+        )
+
+        # Main -> children.
+        self.lti_1p3_config.save()
+        child.refresh_from_db()
+        self.assertEqual(child.reusable_configuration_id, child_configuration.pk)
+        self.assertEqual(child.display_name, 'child override')
+        self.assertEqual(child.lti_1p1_client_secret, 'child secret')
+
+        # Children -> main.
+        child.save()
+        self.lti_1p3_config.refresh_from_db()
+        self.assertEqual(self.lti_1p3_config.reusable_configuration_id, self.configuration_1p3.pk)
+        self.assertEqual(self.lti_1p3_config.display_name, 'main override')
+        self.assertEqual(self.lti_1p3_config.lti_1p1_client_secret, 'main secret')
 
     @patch('lti_consumer.models.get_external_config_from_filter')
     @patch('lti_consumer.models.external_multiple_launch_urls_enabled')
@@ -828,14 +1031,20 @@ class TestLtiAgsScoreModel(TestBaseWithPatch):
                 'graceperiod': timedelta(days=2),
             }
         )
+        # This block fixture has no placement row, so answer the signal's grading gate directly.
+        self._compat_mock.load_block_as_user.return_value.is_graded = lambda: False
 
         self.dummy_location = 'block-v1:course+test+2020+type@problem+block@test'
 
+        self.configuration = ReusableLtiConfiguration.objects.create(
+            name='Score line item configuration',
+            version=ReusableLtiConfiguration.LTI_1P3,
+        )
         self.lti_config = LtiConfiguration.objects.create(
             config_id='6c440bf4-face-beef-face-e8bcfb1e53bd',
             location=self.dummy_location,
-            version=LtiConfiguration.LTI_1P3,
-            config_store=LtiConfiguration.CONFIG_ON_XBLOCK,
+            config_store=LtiConfiguration.CONFIG_ON_DB,
+            reusable_configuration=self.configuration,
         )
 
         self.line_item = LtiAgsLineItem.objects.create(

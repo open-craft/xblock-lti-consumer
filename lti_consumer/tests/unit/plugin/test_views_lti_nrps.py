@@ -15,7 +15,7 @@ from lti_consumer.lti_1p3.constants import (
     LTI_1P3_CONTEXT_ROLE_TEACHING_ASSISTANT,
 )
 from lti_consumer.lti_xblock import LtiConsumerXBlock
-from lti_consumer.models import LtiConfiguration
+from lti_consumer.models import LtiConfiguration, ReusableLtiConfiguration
 from lti_consumer.plugin.views import LtiNrpsContextMembershipViewSet
 from lti_consumer.tests.test_utils import TestBaseWithPatch, make_xblock
 
@@ -123,24 +123,33 @@ class LtiNrpsTestCase(APITransactionTestCase, TestBaseWithPatch):  # noqa: F821
         rsa_key = RSA.generate(2048)
         self.public_key = rsa_key.publickey().export_key()
 
+        # The block is presentation-only now: tool verification and the NRPS service
+        # flag live on the shared configuration, and a placement can only override the
+        # latter through its nullable frozen column.
         self.xblock_attributes = {
             'lti_version': 'lti_1p3',
             'lti_1p3_launch_url': 'http://tool.example/launch',
             'lti_1p3_oidc_url': 'http://tool.example/oidc',
-            # Intentionally using the same key for tool key to
-            # allow using signing methods and make testing easier.
-            'lti_1p3_tool_public_key': self.public_key,
-
-            # LTI NRPS related attributes
-            'lti_1p3_enable_nrps': True
         }
 
         self.xblock = make_xblock('lti_consumer', LtiConsumerXBlock, self.xblock_attributes)
 
-        # Create configuration
+        # Create configuration: the placement binds explicitly, and the shared row owns the
+        # registration identity, signing material, tool verification and the NRPS service
+        # flag that this fixture previously stored on the block.
+        self.configuration = ReusableLtiConfiguration.objects.create(
+            name='NRPS test configuration',
+            version=ReusableLtiConfiguration.LTI_1P3,
+            context_type='course',
+            context_key='course-v1:edX+DemoX+Demo_Course',
+            lti_advantage_enable_nrps=True,
+            lti_1p3_tool_public_key=self.public_key.decode('utf-8'),
+        )
+        self.configuration.generate_lti_1p3_keys_if_missing()
         self.lti_config = LtiConfiguration.objects.create(
             location=self.xblock.scope_ids.usage_id,
-            version=LtiConfiguration.LTI_1P3,
+            config_store=LtiConfiguration.CONFIG_ON_DB,
+            reusable_configuration=self.configuration,
         )
 
         # Patch internal method to avoid calls to modulestore
@@ -235,12 +244,13 @@ class LtiNrpsContextMembershipViewsetTestCase(LtiNrpsTestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response['content-type'], 'application/vnd.ims.lti-nrps.v2.membershipcontainer+json')
 
-    def test_nrps_disabled_on_block(self):
+    def test_nrps_disabled_on_configuration(self):
         """
         Test that the endpoint returns 403 and does not fetch members when
-        NRPS is disabled on the XBlock, even with a correctly scoped token.
+        NRPS is disabled for the placement, even with a correctly scoped token.
         """
-        self.xblock.lti_1p3_enable_nrps = False
+        self.lti_config.lti_advantage_enable_nrps = False
+        self.lti_config.save()
         self._set_lti_token('https://purl.imsglobal.org/spec/lti-nrps/scope/contextmembership.readonly')
 
         with patch('lti_consumer.plugin.views.compat.get_course_members') as get_members_mock:

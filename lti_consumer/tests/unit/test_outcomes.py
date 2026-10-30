@@ -336,6 +336,10 @@ class TestOutcomeService(TestLtiConsumerXBlock):
     def setUp(self):
         super().setUp()
         self.outcome_service = OutcomeService(self.xblock)
+        # Grading reads the effective configuration, never the block fields.
+        self.effective.accept_grades_after_due_date = True
+        self.effective.enable_grading = True
+        self.effective.grade_weight = 1.0
 
         # Set up user mock for LtiConsumerXBlock.get_lti_1p1_user_from_user_id method.
         self.mock_get_user_id_patcher = patch('lti_consumer.lti_xblock.LtiConsumerXBlock.get_lti_1p1_user_from_user_id')
@@ -374,11 +378,27 @@ class TestOutcomeService(TestLtiConsumerXBlock):
         Test late grade returns failure response
         """
         request = make_request('')
-        self.xblock.accept_grades_past_due = False
+        # The block field is set to prove it is not read for a bound internal placement.
+        self.xblock.accept_grades_past_due = True
+        self.effective.accept_grades_after_due_date = False
         response = self.outcome_service.handle_request(request)
 
         self.assertIn('failure', response)
         self.assertIn('Grade is past due', response)
+
+    @patch('lti_consumer.lti_xblock.LtiConsumerXBlock.is_past_due', Mock(return_value=True))
+    @patch('lti_consumer.outcomes.verify_oauth_body_signature', Mock(return_value=True))
+    @patch('lti_consumer.lti_xblock.LtiConsumerXBlock.get_lti_consumer', Mock(return_value=Mock(oauth_secret='s')))
+    @patch('lti_consumer.outcomes.parse_grade_xml_body', Mock(return_value=('', '', 0.5, 'replaceResultRequest')))
+    def test_grade_past_due_accepted_when_effective_configuration_accepts(self):
+        """
+        Test a late grade is accepted when the resolved configuration accepts grades after the due date
+        """
+        request = make_request('')
+        self.effective.accept_grades_after_due_date = True
+        response = self.outcome_service.handle_request(request)
+
+        self.assertIn('success', response)
 
     @patch('lti_consumer.outcomes.parse_grade_xml_body')
     def test_lti_error_not_raises_type_error(self, mock_parse):

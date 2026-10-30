@@ -23,6 +23,7 @@ from lti_consumer.api import (
     validate_lti_1p3_launch_data,
 )
 from lti_consumer.data import Lti1p3LaunchData, Lti1p3ProctoringLaunchData
+from lti_consumer.effective import LtiConfigurationError
 from lti_consumer.lti_xblock import LtiConsumerXBlock
 from lti_consumer.models import LtiConfiguration, LtiDlContentItem, ReusableLtiConfiguration
 from lti_consumer.tests.test_utils import TestBaseWithPatch, make_xblock
@@ -65,6 +66,21 @@ class Lti1P3TestCase(TestBaseWithPatch):
         self.location = self.xblock.scope_ids.usage_id
         self.other_location = UsageKey.from_string("block-v1:course+101+2024+type@lti_consumer+block@test")
 
+    @staticmethod
+    def _make_bound_placement(**kwargs):
+        """Create one configuration and a placement bound to it, without any block read."""
+        configuration = ReusableLtiConfiguration.objects.create(
+            name='Bound configuration',
+            version=ReusableLtiConfiguration.LTI_1P3,
+            context_type='course',
+            context_key='course-v1:edX+DemoX+Demo_Course',
+            lti_1p3_launch_url='http://tool.example/launch',
+            lti_1p3_oidc_url='http://tool.example/oidc',
+        )
+        kwargs.setdefault('config_store', LtiConfiguration.CONFIG_ON_DB)
+        kwargs.setdefault('reusable_configuration', configuration)
+        return configuration, LtiConfiguration.objects.create(**kwargs)
+
 
 @ddt.ddt
 class TestConfigIdForBlock(Lti1P3TestCase):
@@ -95,17 +111,66 @@ class TestConfigIdForBlock(Lti1P3TestCase):
     @ddt.data(
         ('external', LtiConfiguration.CONFIG_EXTERNAL),
         ('database', LtiConfiguration.CONFIG_ON_DB),
-        ('any other val', LtiConfiguration.CONFIG_ON_XBLOCK),
     )
+    @ddt.unpack
     @patch('lti_consumer.api.get_external_config_from_filter')
-    def test_store_types(self, mapping_pair, mock_external_config):
+    def test_store_types(self, str_store, result_store, mock_external_config):
         mock_external_config.return_value = {"version": LtiConfiguration.LTI_1P3}
-        str_store, result_store = mapping_pair
         self.xblock.config_type = str_store
         config_id = config_id_for_block(self.xblock)
         self.assertIsNotNone(config_id)
         config = _get_config_by_config_id(config_id)
         self.assertEqual(result_store, config.config_store)
+
+    def test_block_stored_configuration_is_rejected(self):
+        """The block-stored runtime is gone, so an unconverted block cannot resolve a config."""
+        self.xblock.config_type = 'new'
+
+        with self.assertRaises(LtiConfigurationError):
+            config_id_for_block(self.xblock)
+        self.assertFalse(LtiConfiguration.objects.exists())
+
+    def test_stored_placement_wins_over_a_stale_block_source(self):
+        """A bound stored placement is authoritative even when the block source is stale."""
+        self.xblock.config_type = 'new'
+        configuration = self._make_bound_configuration()
+
+        with patch('lti_consumer.api.get_external_config_from_filter') as external_filter:
+            config_id = config_id_for_block(self.xblock)
+
+        external_filter.assert_not_called()
+        self.assertEqual(_get_config_by_config_id(config_id).reusable_configuration_id, configuration.pk)
+        self.assertEqual(LtiConfiguration.objects.count(), 1)
+
+    def test_stale_external_block_field_never_calls_the_provider(self):
+        """A stored internal placement does not consult the stale external reference."""
+        self.xblock.config_type = 'external'
+        self.xblock.external_config = 'stale:reference'
+        configuration = self._make_bound_configuration()
+
+        with patch('lti_consumer.api.get_external_config_from_filter') as external_filter:
+            config_id = config_id_for_block(self.xblock)
+
+        external_filter.assert_not_called()
+        placement = _get_config_by_config_id(config_id)
+        self.assertEqual(placement.config_store, LtiConfiguration.CONFIG_ON_DB)
+        self.assertEqual(placement.reusable_configuration_id, configuration.pk)
+        self.assertEqual(LtiConfiguration.objects.count(), 1)
+
+    def _make_bound_configuration(self):
+        """Store a bound placement for this test's block and return its configuration."""
+        configuration = ReusableLtiConfiguration.objects.create(
+            name='Stored configuration',
+            version=ReusableLtiConfiguration.LTI_1P3,
+            context_type='course',
+            context_key='course-v1:edX+DemoX+Demo_Course',
+        )
+        LtiConfiguration.objects.create(
+            location=self.xblock.scope_ids.usage_id,
+            config_store=LtiConfiguration.CONFIG_ON_DB,
+            reusable_configuration=configuration,
+        )
+        return configuration
 
 
 @ddt.ddt
@@ -132,7 +197,9 @@ class TestGetOrCreateLocalLtiConfiguration(Lti1P3TestCase):
         # Check if the object was created
         self.assertEqual(lti_config.version, lti_version)
         self.assertEqual(str(lti_config.location), str(self.location))
-        self.assertEqual(lti_config.config_store, LtiConfiguration.CONFIG_ON_XBLOCK)
+        self.assertEqual(lti_config.config_store, LtiConfiguration.CONFIG_ON_DB)
+        # Binding is explicit; a read never creates a configuration from the block.
+        self.assertIsNone(lti_config.reusable_configuration)
 
     def test_retrieve_existing(self):
         """
@@ -154,26 +221,29 @@ class TestGetOrCreateLocalLtiConfiguration(Lti1P3TestCase):
         self.assertEqual(LtiConfiguration.objects.all().count(), 1)
         self.assertEqual(lti_config_retrieved, lti_config)
 
-    def test_update_lti_version(self):
+    def test_existing_row_is_never_rewritten(self):
         """
-        Check if the API retrieves the config and updates the API version.
+        A stored placement keeps its source, external reference and version.
         """
         lti_config = LtiConfiguration.objects.create(
             location=self.location,
-            version=LtiConfiguration.LTI_1P1
+            version=LtiConfiguration.LTI_1P1,
+            config_store=LtiConfiguration.CONFIG_EXTERNAL,
+            external_id='app:slug',
         )
 
-        # Call API
         _get_or_create_local_lti_config(
             lti_version=LtiConfiguration.LTI_1P3,
-            block=self.xblock
+            block=self.xblock,
+            config_store=LtiConfiguration.CONFIG_ON_DB,
         )
 
-        # Check if the object was created
         lti_config.refresh_from_db()
-        self.assertEqual(lti_config.version, LtiConfiguration.LTI_1P3)
+        self.assertEqual(lti_config.version, LtiConfiguration.LTI_1P1)
+        self.assertEqual(lti_config.config_store, LtiConfiguration.CONFIG_EXTERNAL)
+        self.assertEqual(lti_config.external_id, 'app:slug')
 
-    @ddt.data(LtiConfiguration.CONFIG_ON_XBLOCK, LtiConfiguration.CONFIG_EXTERNAL, LtiConfiguration.CONFIG_ON_DB)
+    @ddt.data(LtiConfiguration.CONFIG_EXTERNAL, LtiConfiguration.CONFIG_ON_DB)
     def test_create_lti_config_config_store(self, config_store):
         """
         Check if the config_store parameter to _get_or_create_local_lti_config is used to change
@@ -188,12 +258,10 @@ class TestGetOrCreateLocalLtiConfiguration(Lti1P3TestCase):
 
         self.assertEqual(lti_config.config_store, config_store)
 
-    def test_external_config_values_are_cleared(self):
+    def test_external_reference_is_not_cleared(self):
         """
-        Check if the API clears external configuration values when external id is none
+        An external placement keeps its stored external reference.
         """
-        lti_version = LtiConfiguration.LTI_1P3
-
         lti_config = LtiConfiguration.objects.create(
             location=self.location,
             version=LtiConfiguration.LTI_1P3,
@@ -202,79 +270,44 @@ class TestGetOrCreateLocalLtiConfiguration(Lti1P3TestCase):
         )
 
         _get_or_create_local_lti_config(
-            lti_version=lti_version,
+            lti_version=LtiConfiguration.LTI_1P3,
             block=self.xblock,
         )
 
         lti_config.refresh_from_db()
-        self.assertEqual(lti_config.version, lti_version)
-        self.assertEqual(str(lti_config.location), str(self.location))
-        self.assertEqual(lti_config.config_store, LtiConfiguration.CONFIG_ON_XBLOCK)
-        self.assertEqual(lti_config.external_id, None)
+        self.assertEqual(lti_config.config_store, LtiConfiguration.CONFIG_EXTERNAL)
+        self.assertEqual(lti_config.external_id, "test_plugin:test-id")
 
-    def test_passport_created_on_first_call(self):
+    def test_creation_does_not_create_or_bind_a_configuration(self):
         """
-        Check if a passport is created when none exists.
+        A placement is created unbound; attaching a configuration is an explicit step.
         """
-        lti_version = LtiConfiguration.LTI_1P3
+        before = ReusableLtiConfiguration.objects.count()
 
         lti_config = _get_or_create_local_lti_config(
-            lti_version=lti_version,
-            block=self.xblock
+            lti_version=LtiConfiguration.LTI_1P3,
+            block=self.xblock,
         )
 
-        self.assertIsNotNone(lti_config.reusable_configuration)
+        self.assertEqual(ReusableLtiConfiguration.objects.count(), before)
+        self.assertIsNone(lti_config.reusable_configuration)
+        self.assertIsNone(lti_config.passport_id)
 
-    def test_external_creation_stores_the_source_before_the_post_save_signal(self):
+    def test_external_creation_stores_the_source(self):
         """
-        An external placement is external on insert, so the signal never sees a catalog row.
+        An external placement stores its store and external reference on insert.
         """
-        seen = []
-        with patch.object(
-            LtiConfiguration,
-            'get_or_create_reusable_configuration',
-            autospec=True,
-            side_effect=lambda instance: seen.append((instance.config_store, instance.version)),
-        ):
-            lti_config = _get_or_create_local_lti_config(
-                lti_version=LtiConfiguration.LTI_1P3,
-                block=self.xblock,
-                config_store=LtiConfiguration.CONFIG_EXTERNAL,
-            )
+        lti_config = _get_or_create_local_lti_config(
+            lti_version=LtiConfiguration.LTI_1P3,
+            block=self.xblock,
+            config_store=LtiConfiguration.CONFIG_EXTERNAL,
+        )
 
-        self.assertEqual(seen, [(LtiConfiguration.CONFIG_EXTERNAL, LtiConfiguration.LTI_1P3)])
         self.assertEqual(lti_config.config_store, LtiConfiguration.CONFIG_EXTERNAL)
+        self.assertEqual(lti_config.version, LtiConfiguration.LTI_1P3)
         self.assertIsNone(lti_config.reusable_configuration)
 
-    def test_normal_creation_keeps_the_embedded_source(self):
-        """
-        A non-external placement is created with its version and store, then linked.
-        """
-        lti_config = _get_or_create_local_lti_config(
-            lti_version=LtiConfiguration.LTI_1P3,
-            block=self.xblock,
-        )
-
-        self.assertEqual(lti_config.config_store, LtiConfiguration.CONFIG_ON_XBLOCK)
-        self.assertEqual(lti_config.version, LtiConfiguration.LTI_1P3)
-        self.assertIsNotNone(lti_config.reusable_configuration)
-
-    def test_existing_row_keeps_its_updates(self):
-        """
-        A row that already exists still receives the new source and version.
-        """
-        LtiConfiguration.objects.create(location=self.location, version=LtiConfiguration.LTI_1P1)
-
-        lti_config = _get_or_create_local_lti_config(
-            lti_version=LtiConfiguration.LTI_1P3,
-            block=self.xblock,
-            config_store=LtiConfiguration.CONFIG_ON_DB,
-        )
-
-        self.assertEqual(lti_config.config_store, LtiConfiguration.CONFIG_ON_DB)
-        self.assertEqual(lti_config.version, LtiConfiguration.LTI_1P3)
-
-    @ddt.data(LtiConfiguration.CONFIG_ON_XBLOCK, LtiConfiguration.CONFIG_ON_DB)
+    @ddt.data(LtiConfiguration.CONFIG_ON_DB, LtiConfiguration.CONFIG_EXTERNAL)
     def test_block_save_never_rewrites_the_bound_configuration(self, stored_store):
         """
         A block save never rewrites the bound configuration's tool-key values, whichever
@@ -325,7 +358,7 @@ class TestGetOrCreateLocalLtiConfiguration(Lti1P3TestCase):
         LtiConfiguration.objects.create(
             location=self.location,
             version=LtiConfiguration.LTI_1P3,
-            config_store=LtiConfiguration.CONFIG_ON_XBLOCK,
+            config_store=LtiConfiguration.CONFIG_ON_DB,
         )
 
         # Ensure block has default external_config of None and LTI version matches
@@ -333,7 +366,7 @@ class TestGetOrCreateLocalLtiConfiguration(Lti1P3TestCase):
             _get_or_create_local_lti_config(
                 lti_version=LtiConfiguration.LTI_1P3,
                 block=self.xblock,
-                config_store=LtiConfiguration.CONFIG_ON_XBLOCK,
+                config_store=LtiConfiguration.CONFIG_ON_DB,
             )
             mock_save.assert_not_called()
 
@@ -364,6 +397,14 @@ class TestGetOrCreateLocalLtiConfiguration(Lti1P3TestCase):
         """
         Check that the block's passport_id field is synced from the configuration.
         """
+        self.xblock.config_type = 'database'
+        configuration = self._make_configuration()
+        LtiConfiguration.objects.create(
+            location=self.location,
+            config_store=LtiConfiguration.CONFIG_ON_DB,
+            reusable_configuration=configuration,
+        )
+
         self.assertTrue(sync_lti_passport_id_to_block(self.xblock))
 
         lti_config = LtiConfiguration.objects.get(location=self.location)
@@ -371,6 +412,28 @@ class TestGetOrCreateLocalLtiConfiguration(Lti1P3TestCase):
 
         # Nothing to do on a second call.
         self.assertFalse(sync_lti_passport_id_to_block(self.xblock))
+
+    def test_sync_lti_passport_id_does_not_create_a_placement(self):
+        """A Studio save never creates a placement or a configuration."""
+        self.xblock.config_type = 'database'
+
+        self.assertFalse(sync_lti_passport_id_to_block(self.xblock))
+
+        self.assertFalse(LtiConfiguration.objects.exists())
+        self.assertFalse(ReusableLtiConfiguration.objects.exists())
+        self.assertEqual(self.xblock.lti_1p3_passport_id, '')
+
+    def test_sync_lti_passport_id_is_false_for_an_unbound_placement(self):
+        """An existing but unbound placement is not bound just to copy an ID."""
+        LtiConfiguration.objects.create(
+            location=self.location,
+            config_store=LtiConfiguration.CONFIG_ON_DB,
+        )
+
+        self.assertFalse(sync_lti_passport_id_to_block(self.xblock))
+
+        self.assertFalse(ReusableLtiConfiguration.objects.exists())
+        self.assertEqual(self.xblock.lti_1p3_passport_id, '')
 
     @ddt.data(
         ('public_key', 'lti_1p3_tool_public_key'),
@@ -626,7 +689,7 @@ class TestGetLti1p3LaunchInfo(Lti1P3TestCase):
         """
         Check if the API retrieves the launch with id.
         """
-        lti_config = LtiConfiguration.objects.create(
+        configuration, lti_config = self._make_bound_placement(
             location=self.location,
             config_id=_test_config_id,
         )
@@ -637,7 +700,10 @@ class TestGetLti1p3LaunchInfo(Lti1P3TestCase):
         launch_info = get_lti_1p3_launch_info(launch_data)
 
         # Not checking all data here, there's a test specific for that
-        self.assertEqual(launch_info['client_id'], lti_config.lti_1p3_client_id)
+        self.assertEqual(launch_info['client_id'], configuration.lti_1p3_client_id)
+        self.assertEqual(launch_info['deployment_id'], '1')
+        self.assertIn(str(configuration.passport_id), launch_info['keyset_url'])
+        self.assertEqual(lti_config.passport_id, configuration.passport_id)
 
     def test_retrieve_with_block(self):
         """
@@ -646,7 +712,7 @@ class TestGetLti1p3LaunchInfo(Lti1P3TestCase):
         launch_data = self._get_lti_1p3_launch_data()
 
         # Create LTI Config and Deep linking object
-        lti_config = LtiConfiguration.objects.create(
+        _, lti_config = self._make_bound_placement(
             location=self.location,
             config_id=_test_config_id,
         )
@@ -681,8 +747,7 @@ class TestGetLti1p3LaunchInfo(Lti1P3TestCase):
         Check if the API can return launch info for LtiConfiguration objects without
         specified block location.
         """
-        lti_config = LtiConfiguration.objects.create(
-            version=LtiConfiguration.LTI_1P3,
+        _, lti_config = self._make_bound_placement(
             config_id=_test_config_id,
         )
         LtiDlContentItem.objects.create(
@@ -709,7 +774,7 @@ class TestGetLti1p3LaunchInfo(Lti1P3TestCase):
             }
         )
 
-    @patch('lti_consumer.api.get_external_config_from_filter')
+    @patch('lti_consumer.models.get_external_config_from_filter')
     def test_launch_info_for_lti_config_with_external_configuration(
         self,
         filter_mock,
@@ -759,11 +824,9 @@ class TestGetLti1p3LaunchUrl(Lti1P3TestCase):
         """
         super().setUp()
         # Create lti configuration
-        self.lti_config = LtiConfiguration.objects.create(
+        _, self.lti_config = self._make_bound_placement(
             config_id=_test_config_id,
             location=self.xblock.scope_ids.usage_id,
-            version=LtiConfiguration.LTI_1P3,
-            config_store=LtiConfiguration.CONFIG_ON_XBLOCK,
         )
 
     def _get_lti_1p3_launch_data(self):
@@ -836,11 +899,9 @@ class TestGetLti1p3ContentUrl(Lti1P3TestCase):
         """
         super().setUp()
         # Create lti configuration
-        self.lti_config = LtiConfiguration.objects.create(
+        _, self.lti_config = self._make_bound_placement(
             config_id=_test_config_id,
             location=self.xblock.scope_ids.usage_id,
-            version=LtiConfiguration.LTI_1P3,
-            config_store=LtiConfiguration.CONFIG_ON_XBLOCK,
         )
 
     def _get_lti_1p3_launch_data(self):
@@ -926,7 +987,7 @@ class TestGetLtiDlContentItemData(Lti1P3TestCase):
         Set up an empty block configuration.
         """
         super().setUp()
-        self.lti_config = LtiConfiguration.objects.create(
+        _, self.lti_config = self._make_bound_placement(
             location='block-v1:course+test+2020+type@problem+block@test',
         )
 

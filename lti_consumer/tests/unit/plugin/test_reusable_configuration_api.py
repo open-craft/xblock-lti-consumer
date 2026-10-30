@@ -43,7 +43,7 @@ CONFIG_STATE_FIELDS = (
     'lti_advantage_ags_mode', 'lti_advantage_enable_nrps',
     'display_name', 'enable_grading', 'grade_weight', 'accept_grades_after_due_date',
     'open_tool_in', 'inline_height', 'modal_height', 'modal_width',
-    'launch_button_text', 'send_extra_parameters', 'custom_parameters', 'updated_at',
+    'launch_button_text', 'send_extra_parameters', 'hide_external_tool', 'custom_parameters', 'updated_at',
     # Passport identity, credentials and platform signing material.
     'passport_id', 'lti_1p3_internal_private_key', 'lti_1p3_internal_private_key_id',
     'lti_1p3_internal_public_jwk', 'lti_1p3_tool_public_key', 'lti_1p3_tool_keyset_url',
@@ -174,7 +174,11 @@ class ReusableConfigurationApiJourneys(ReusableApiTestCase):
             build_context('course', f'{COURSE_KEY}+branch@draft'),
             name='  Journey Tool  ',
             services={'nrps_enabled': True, 'deep_linking_launch_url': None},
-            defaults={'display_name': 'Journey display', 'custom_parameters': ['secret=value']},
+            defaults={
+                'display_name': 'Journey display',
+                'custom_parameters': ['secret=value'],
+                'hide_external_tool': True,
+            },
         ), format='json')
         self.assertEqual(response.status_code, 201, response.data)
         self.assertEqual(response['Cache-Control'], 'no-store')
@@ -189,6 +193,7 @@ class ReusableConfigurationApiJourneys(ReusableApiTestCase):
         self.assertEqual(configuration.lti_advantage_deep_linking_launch_url, '')
         self.assertEqual(configuration.display_name, 'Journey display')
         self.assertEqual(configuration.custom_parameters, ['secret=value'])
+        self.assertTrue(configuration.hide_external_tool)
         self.assertEqual(response.data['one_time_credentials']['client_secret'], secret)
         self.assertEqual(response.data['context'], build_context('course', COURSE_KEY))
 
@@ -197,6 +202,7 @@ class ReusableConfigurationApiJourneys(ReusableApiTestCase):
         detail = self.client.get(detail_url)
         patched = self.client.patch(detail_url, {'name': 'Renamed Tool'}, format='json')
         self.assertEqual(detail['Cache-Control'], 'no-store')
+        self.assertTrue(detail.data['hide_external_tool'])
         self.assertEqual(patched.status_code, 200, patched.data)
         self.assertEqual(patched['Cache-Control'], 'no-store')
         self.assertNotIn('one_time_credentials', patched.data)

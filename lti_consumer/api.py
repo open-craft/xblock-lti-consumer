@@ -11,6 +11,7 @@ from opaque_keys.edx.keys import CourseKey
 
 from lti_consumer.lti_1p3.constants import LTI_1P3_ROLE_MAP
 
+from .effective import LtiConfigurationError, resolve_lti_configuration
 from .filters import get_external_config_from_filter
 from .models import CourseAllowPIISharingInLTIFlag, LtiConfiguration, LtiDlContentItem
 from .utils import (
@@ -24,38 +25,22 @@ from .utils import (
 )
 
 
-def _get_or_create_local_lti_config(lti_version, block, config_store=LtiConfiguration.CONFIG_ON_XBLOCK):
+def _get_or_create_local_lti_config(lti_version, block, config_store=LtiConfiguration.CONFIG_ON_DB):
     """
     Retrieve or create an LtiConfiguration for the block.
 
-    The lti_version parameter is treated as the source of truth, overriding
-    any stored version to allow XBlocks to control LTI version without DB updates.
+    Only a missing placement is inserted. An existing placement keeps its stored source,
+    external reference and version: those are never rewritten from the block on a read, so
+    the placement's own overrides stay authoritative.
     """
-    effective_version = lti_version or block.lti_version
-    # The source must be stored on the creating insert: the post_save signal runs
-    # before any later update, and an external placement is not a catalog entry.
     lti_config, _ = LtiConfiguration.objects.get_or_create(
         location=block.scope_ids.usage_id,
         defaults={
             'config_store': config_store,
             'external_id': block.external_config,
-            'version': effective_version,
+            'version': lti_version or block.lti_version,
         },
     )
-
-    # Batch updates for rows that already existed with other values.
-    updates = {
-        'config_store': config_store,
-        'external_id': block.external_config,
-        'version': effective_version,
-    }
-
-    # Only save if changed
-    if any(getattr(lti_config, key) != value for key, value in updates.items()):
-        for key, value in updates.items():
-            setattr(lti_config, key, value)
-        lti_config.save()
-
     return lti_config
 
 
@@ -63,12 +48,15 @@ def sync_lti_passport_id_to_block(block):
     """
     Copy the configuration's passport_id onto the block's `lti_1p3_passport_id` field.
 
-    Only safe to call from Studio: the LMS binds blocks to read-only field data for
-    Scope.settings, so writing the field there raises `InvalidScopeError`.
+    Lookup only: a block without a stored placement or binding is left untouched, so a
+    Studio save never creates a placement or a configuration. Only safe to call from
+    Studio: the LMS binds blocks to read-only field data for Scope.settings, so writing
+    the field there raises `InvalidScopeError`.
 
     Returns True if the field was changed, False otherwise.
     """
-    passport = _get_lti_config_for_block(block).reusable_configuration
+    placement = LtiConfiguration.objects.filter(location=block.scope_ids.usage_id).first()
+    passport = placement.reusable_configuration if placement else None
     if passport and block.lti_1p3_passport_id != str(passport.passport_id):
         block.lti_1p3_passport_id = str(passport.passport_id)
         return True
@@ -84,34 +72,39 @@ def _get_config_by_config_id(config_id):
 
 def _get_lti_config_for_block(block):
     """
-    Retrieves or creates a LTI Configuration for a block.
+    Return the stored placement for a block, creating one only when none exists.
 
-    This wraps around `_get_or_create_local_lti_config` and handles the block and modulestore
-    bits of configuration.
+    The stored placement is authoritative. Conversion leaves block fields untouched, so a
+    stale block source must not override a bound CONFIG_ON_DB row, consult an external
+    provider, or rewrite the row. Block values are used only to create a missing placement;
+    a block whose stored source is gone has no runtime and raises.
     """
+    placement = LtiConfiguration.objects.filter(location=block.scope_ids.usage_id).first()
+    if placement is not None:
+        return placement
+
     if block.config_type == 'database':
-        lti_config = _get_or_create_local_lti_config(
+        return _get_or_create_local_lti_config(
             block.lti_version,
             block,
             LtiConfiguration.CONFIG_ON_DB,
         )
-    elif block.config_type == 'external':
+    if block.config_type == 'external':
         config = get_external_config_from_filter(
             {"course_key": block.scope_ids.usage_id.context_key},
             block.external_config
         )
-        lti_config = _get_or_create_local_lti_config(
+        return _get_or_create_local_lti_config(
             config.get("version"),
             block,
             LtiConfiguration.CONFIG_EXTERNAL,
         )
-    else:
-        lti_config = _get_or_create_local_lti_config(
-            block.lti_version,
-            block,
-            LtiConfiguration.CONFIG_ON_XBLOCK,
-        )
-    return lti_config
+
+    # The block-stored runtime is gone: a legacy placement must be converted or attached
+    # before it can launch, and silently reading block fields would be a second source.
+    raise LtiConfigurationError(
+        'This LTI block needs a reusable configuration before it can launch.',
+    )
 
 
 def config_id_for_block(block):
@@ -166,15 +159,16 @@ def get_lti_1p3_launch_info(
         if dl_content_items.exists():
             deep_linking_content_items = [item.attributes for item in dl_content_items]
 
-    config_id = lti_config.passport_id
-    client_id = lti_config.lti_1p3_client_id
-    deployment_id = getattr(lti_config.reusable_configuration, 'lti_1p3_deployment_id', None) or "1"
+    effective = resolve_lti_configuration(lti_config)
+    config_id = effective.passport_id
+    client_id = effective.lti_1p3_client_id
+    deployment_id = effective.lti_1p3_deployment_id or "1"
 
-    # Display LTI launch information from external configuration.
+    # Display LTI launch information from external configuration,
     # if an external configuration is being used.
-    if lti_config.config_store == lti_config.CONFIG_EXTERNAL:
-        external_config = get_external_config_from_filter({}, lti_config.external_id)
-        config_id = lti_config.external_id.replace(':', '/')
+    if effective.is_external:
+        external_config = effective.external_config or {}
+        config_id = effective.external_id.replace(':', '/')
         client_id = external_config.get('lti_1p3_client_id')
         deployment_id = external_config.get('lti_1p3_deployment_id', deployment_id)
 

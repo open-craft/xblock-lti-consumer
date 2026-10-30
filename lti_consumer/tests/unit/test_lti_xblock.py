@@ -7,6 +7,7 @@ import logging
 import string
 from datetime import timedelta
 from itertools import product
+from types import SimpleNamespace
 from unittest.mock import Mock, PropertyMock, patch
 from xml.etree.ElementTree import Element
 
@@ -22,6 +23,7 @@ from xblock.validation import Validation
 
 from lti_consumer.api import config_id_for_block
 from lti_consumer.data import Lti1p3LaunchData
+from lti_consumer.effective import LtiConfigurationError
 from lti_consumer.exceptions import LtiError
 from lti_consumer.lti_1p3.tests.utils import create_jwt
 from lti_consumer.lti_xblock import LtiConsumerXBlock, parse_handler_suffix, valid_config_type_values
@@ -36,6 +38,87 @@ from lti_consumer.tests.test_utils import (
     make_xblock,
 )
 from lti_consumer.utils import resolve_custom_parameter_template
+
+
+def make_effective_configuration(**overrides):
+    """
+    Build a resolver result with explicit values.
+
+    Tests set the values they assert. Reading the block fields here would hide a block-field
+    fallback that the resolver contract forbids.
+    """
+    values = {
+        'is_external': False,
+        'external_config': None,
+        'external_id': None,
+        'version': 'lti_1p1',
+        'display_name': 'LTI Consumer',
+        'enable_grading': False,
+        'grade_weight': 1.0,
+        'accept_grades_after_due_date': True,
+        'hide_external_tool': False,
+        'open_tool_in': 'iframe',
+        'inline_height': 800,
+        'modal_height': 80,
+        'modal_width': 80,
+        'launch_button_text': '',
+        'send_extra_parameters': False,
+        'custom_parameters': [],
+        'lti_1p1_launch_url': '',
+        'lti_1p3_launch_url': '',
+    }
+    values.update(overrides)
+    return SimpleNamespace(**values)
+
+
+def patch_effective_configuration(testcase, **overrides):
+    """
+    Patch the resolver boundary and return the stub the test can adjust.
+
+    Routing tests assert that the block uses resolved settings; resolution itself has its own
+    tests, so reading block fields here would only hide a block-field fallback.
+    """
+    effective = make_effective_configuration(**overrides)
+    patcher = patch.object(LtiConsumerXBlock, 'get_effective_configuration', Mock(return_value=effective))
+    patcher.start()
+    testcase.addCleanup(patcher.stop)
+    return effective
+
+
+def bind_internal_placement(xblock, version=LtiConfiguration.LTI_1P3, configuration_values=None, **overrides):
+    """
+    Create the bound internal placement a runtime test needs.
+
+    Runtime fixtures bind explicitly: a placement without a reusable configuration is a
+    configuration error, never a block-field fallback.
+    """
+    configuration = ReusableLtiConfiguration.objects.create(version=version, **(configuration_values or {}))
+    # Registration owns the platform signing material; runtime reads never generate it.
+    configuration.generate_lti_1p3_keys_if_missing()
+    return LtiConfiguration.objects.create(
+        location=xblock.scope_ids.usage_id,
+        config_store=LtiConfiguration.CONFIG_ON_DB,
+        version=version,
+        reusable_configuration=configuration,
+        **overrides,
+    )
+
+
+def bind_external_placement(xblock, external_id='test-plugin:test-id', version=LtiConfiguration.LTI_1P3, **overrides):
+    """
+    Create the stored external reference a runtime test needs.
+
+    The block fields are left untouched: conversion never rewrites them, so a stale block
+    `config_type` or `external_config` must not change what resolves.
+    """
+    return LtiConfiguration.objects.create(
+        location=xblock.scope_ids.usage_id,
+        config_store=LtiConfiguration.CONFIG_EXTERNAL,
+        external_id=external_id,
+        version=version,
+        **overrides,
+    )
+
 
 HTML_PROBLEM_PROGRESS = '<div class="problem-progress">'
 HTML_ERROR_MESSAGE = '<h3 class="error_message">'
@@ -55,6 +138,7 @@ class TestLtiConsumerXBlock(TestBaseWithPatch):
             'launch_url': 'http://www.example.com',
         }
         self.xblock = make_xblock('lti_consumer', LtiConsumerXBlock, self.xblock_attributes)
+        self.effective = patch_effective_configuration(self, lti_1p1_launch_url='http://www.example.com')
 
         # Patch calls to LMS event tracking
         self._mock_emit_track_event = Mock()
@@ -81,48 +165,36 @@ class TestLtiConsumerXBlock(TestBaseWithPatch):
 class TestGetEffectiveLtiVersion(TestLtiConsumerXBlock):
     """
     Tests for LtiConsumerXBlock.get_resolved_lti_version().
+
+    The persisted placement decides the source; the block's stored `config_type`,
+    `external_config` and `lti_version` are never consulted at runtime.
     """
 
-    def test_returns_external_version_key_when_external(self):
+    def test_internal_placement_version_ignores_the_stored_block_type(self):
         """
-        When config_type is external and external config has a "version"
-        key, that version takes priority over self.lti_version.
+        A bound internal placement resolves its version even when the block still says external
         """
         self.xblock.config_type = "external"
-        self.xblock.external_config = "test-plugin:test-id"
+        self.xblock.external_config = "stale-plugin:stale-id"
         self.xblock.lti_version = "lti_1p1"
+        self.effective.version = "lti_1p3"
 
         with patch("lti_consumer.lti_xblock.get_external_config_from_filter") as mock_filter:
-            mock_filter.return_value = {"version": "lti_1p3"}
             self.assertEqual(self.xblock.get_resolved_lti_version(), "lti_1p3")
-            mock_filter.assert_called_once()
 
-    def test_falls_back_to_lti_version_when_no_external_version(self):
+        mock_filter.assert_not_called()
+
+    def test_external_placement_version_ignores_the_stored_block_version(self):
         """
-        When external config has no "version" key, fall back to
-        self.lti_version.
+        An external placement takes the provider version even when the block says 1.1
         """
-        self.xblock.config_type = "external"
-        self.xblock.external_config = "test-plugin:test-id"
+        self.xblock.config_type = "new"
         self.xblock.lti_version = "lti_1p1"
+        self.effective.is_external = True
+        self.effective.external_config = {"version": "lti_1p3"}
+        self.effective.version = "lti_1p3"
 
-        with patch("lti_consumer.lti_xblock.get_external_config_from_filter") as mock_filter:
-            mock_filter.return_value = {"lti_1p3_client_id": "test"}
-            self.assertEqual(self.xblock.get_resolved_lti_version(), "lti_1p1")
-
-    def test_falls_back_on_filter_exception(self):
-        """
-        When get_external_config_from_filter raises, fall back to
-        self.lti_version instead of propagating the exception.
-        """
-        self.xblock.config_type = "external"
-        self.xblock.external_config = "test-plugin:test-id"
-        self.xblock.lti_version = "lti_1p1"
-
-        with patch("lti_consumer.lti_xblock.get_external_config_from_filter") as mock_filter:
-            mock_filter.side_effect = Exception("Filter service unavailable")
-            version = self.xblock.get_resolved_lti_version()
-            self.assertEqual(version, "lti_1p1")
+        self.assertEqual(self.xblock.get_resolved_lti_version(), "lti_1p3")
 
 
 class TestResolveExternalConfigVersion(TestLtiConsumerXBlock):
@@ -207,15 +279,37 @@ class TestIndexibility(TestCase):
         self.xblock = make_xblock('lti_consumer', LtiConsumerXBlock, self.xblock_attributes)
 
     def test_indexibility(self):
+        """
+        A bound internal placement is indexed under its resolved title, not the block field
+        """
+        bind_internal_placement(self.xblock, display_name='Shared display name')
+
         self.assertEqual(
             self.xblock.index_dictionary(),
             {
                 'content_type': 'LTI Consumer',
                 'content': {
-                    'display_name': 'Example LTI Consumer Application',
+                    'display_name': 'Shared display name',
                     'description': 'An example application to demonstrate LTI Consumer'
                 }
             }
+        )
+
+    def test_indexibility_without_a_placement(self):
+        """
+        An unconfigured component is indexed with no title instead of a raw internal fallback
+        """
+        self.assertEqual(self.xblock.index_dictionary()['content']['display_name'], '')
+
+    def test_indexibility_for_an_external_placement(self):
+        """
+        An external reference is titled by the block, which owns its presentation
+        """
+        bind_external_placement(self.xblock)
+
+        self.assertEqual(
+            self.xblock.index_dictionary()['content']['display_name'],
+            'Example LTI Consumer Application',
         )
 
 
@@ -686,10 +780,11 @@ class TestProperties(TestLtiConsumerXBlock):
         self.xblock.due = now
         self.xblock.graceperiod = one_day
 
-        self.xblock.custom_parameters = ['param_1=true', 'param_2 = false', 'lti_version=1.1']
+        self.effective.display_name = 'Shared display name'
+        self.effective.custom_parameters = ['param_1=true', 'param_2 = false', 'lti_version=1.1']
 
         expected_params = {
-            'custom_component_display_name': self.xblock.display_name,
+            'custom_component_display_name': 'Shared display name',
             'custom_component_due_date': now.strftime('%Y-%m-%d %H:%M:%S'),
             'custom_component_graceperiod': str(one_day.total_seconds()),
             'custom_param_1': 'true',
@@ -710,10 +805,10 @@ class TestProperties(TestLtiConsumerXBlock):
         one_day = timedelta(days=1)
         self.xblock.due = now
         self.xblock.graceperiod = one_day
-        self.xblock.custom_parameters = ['dynamic_param_1=${template_value}', 'param_2=false']
+        self.effective.custom_parameters = ['dynamic_param_1=${template_value}', 'param_2=false']
         mock_resolve_custom_parameter_template.return_value = 'resolved_template_value'
         expected_params = {
-            'custom_component_display_name': self.xblock.display_name,
+            'custom_component_display_name': self.effective.display_name,
             'custom_component_due_date': now.strftime('%Y-%m-%d %H:%M:%S'),
             'custom_component_graceperiod': str(one_day.total_seconds()),
             'custom_dynamic_param_1': 'resolved_template_value',
@@ -729,7 +824,7 @@ class TestProperties(TestLtiConsumerXBlock):
         """
         Test `prefixed_custom_parameters` when a custom parameter has been configured with the wrong format
         """
-        self.xblock.custom_parameters = ['param_1=true', 'param_2=false', 'lti_version1.1']
+        self.effective.custom_parameters = ['param_1=true', 'param_2=false', 'lti_version1.1']
 
         with self.assertRaises(LtiError):
             __ = self.xblock.prefixed_custom_parameters
@@ -793,6 +888,8 @@ class TestSubmitStudioEdits(TestLtiConsumerXBlock):
         Saving in Studio populates the block's passport_id from the configuration.
         """
         self.assertEqual(self.xblock.lti_1p3_passport_id, '')
+        self.xblock.config_type = 'database'
+        bind_internal_placement(self.xblock)
 
         request = make_request(json.dumps({'values': {}, 'defaults': []}), 'POST')
         response = self.xblock.submit_studio_edits(request, '')
@@ -800,6 +897,44 @@ class TestSubmitStudioEdits(TestLtiConsumerXBlock):
         self.assertEqual(json.loads(response.body.decode('utf-8')), {'result': 'success'})
         lti_config = LtiConfiguration.objects.get(location=self.xblock.scope_ids.usage_id)
         self.assertEqual(self.xblock.lti_1p3_passport_id, str(lti_config.reusable_configuration.passport_id))
+
+    @patch("lti_consumer.lti_xblock.external_config_filter_enabled", return_value=False)
+    @patch("lti_consumer.lti_xblock.database_config_enabled", return_value=False)
+    def test_studio_save_without_a_placement_creates_nothing(self, *_args):
+        """
+        A Studio save of a block with no placement writes no placement and no passport
+        """
+        request = make_request(json.dumps({'values': {}, 'defaults': []}), 'POST')
+        response = self.xblock.submit_studio_edits(request, '')
+
+        self.assertEqual(json.loads(response.body.decode('utf-8')), {'result': 'success'})
+        self.assertFalse(LtiConfiguration.objects.exists())
+        self.assertEqual(self.xblock.lti_1p3_passport_id, '')
+
+    @patch("lti_consumer.lti_xblock.external_config_filter_enabled", return_value=False)
+    @patch("lti_consumer.lti_xblock.database_config_enabled", return_value=False)
+    def test_studio_save_keeps_a_converted_placement_unchanged(self, *_args):
+        """
+        A converted block may still carry stale source fields; saving never rewrites the placement
+        """
+        placement = bind_internal_placement(self.xblock)
+        placement_values = (
+            placement.config_store,
+            placement.external_id,
+            placement.reusable_configuration_id,
+        )
+        self.xblock.config_type = 'external'
+        self.xblock.external_config = 'stale-plugin:stale-id'
+
+        request = make_request(json.dumps({'values': {}, 'defaults': []}), 'POST')
+        self.xblock.submit_studio_edits(request, '')
+
+        placement.refresh_from_db()
+        self.assertEqual(
+            (placement.config_store, placement.external_id, placement.reusable_configuration_id),
+            placement_values,
+        )
+        self.assertEqual(self.xblock.lti_1p3_passport_id, str(placement.reusable_configuration.passport_id))
 
 
 @ddt.ddt
@@ -949,12 +1084,21 @@ class TestGetLti1p1Consumer(TestLtiConsumerXBlock):
         key = 'test'
         secret = 'secret'
         self.xblock.lti_id = provider
+        self.xblock.config_type = 'database'
+        launch_url = 'http://tool.example/launch'
+        bind_internal_placement(
+            self.xblock,
+            version=LtiConfiguration.LTI_1P1,
+            lti_1p1_launch_url=launch_url,
+            lti_1p1_client_key=key,
+            lti_1p1_client_secret=secret,
+        )
         type(mock_course).lti_passports = PropertyMock(return_value=[f"{provider}:{key}:{secret}"])
 
         with patch('lti_consumer.plugin.compat.load_enough_xblock', return_value=self.xblock):
             self.xblock.get_lti_consumer()
 
-        mock_lti_consumer.assert_called_with(self.xblock.launch_url, key, secret)
+        mock_lti_consumer.assert_called_with(launch_url, key, secret)
 
 
 class TestExtractRealUserData(TestLtiConsumerXBlock):
@@ -1091,9 +1235,12 @@ class TestStudentView(TestLtiConsumerXBlock):
 
     def test_has_score_false(self):
         """
-        Test `has_score` is True
+        Test a component whose effective configuration has grading disabled is not scored.
+
+        The block field is set to prove it is not read for a bound internal placement.
         """
-        self.xblock.has_score = False
+        self.xblock.has_score = True
+        self.effective.enable_grading = False
         fragment = self.xblock.student_view({})
 
         self.assertNotIn(HTML_PROBLEM_PROGRESS, fragment.content)
@@ -1102,7 +1249,8 @@ class TestStudentView(TestLtiConsumerXBlock):
         """
         Test `has_score` is True and `weight` has been configured
         """
-        self.xblock.has_score = True
+        self.effective.enable_grading = True
+        self.effective.grade_weight = 1.0
         fragment = self.xblock.student_view({})
 
         self.assertIn(HTML_PROBLEM_PROGRESS, fragment.content)
@@ -1111,7 +1259,7 @@ class TestStudentView(TestLtiConsumerXBlock):
         """
         Test when `launch_target` is iframe
         """
-        self.xblock.launch_target = 'iframe'
+        self.effective.open_tool_in = 'iframe'
         fragment = self.xblock.student_view({})
 
         self.assertNotIn(HTML_LAUNCH_MODAL_BUTTON, fragment.content)
@@ -1122,7 +1270,7 @@ class TestStudentView(TestLtiConsumerXBlock):
         """
         Test when `launch_target` is modal
         """
-        self.xblock.launch_target = 'modal'
+        self.effective.open_tool_in = 'modal'
         fragment = self.xblock.student_view({})
 
         self.assertIn(HTML_LAUNCH_MODAL_BUTTON, fragment.content)
@@ -1133,7 +1281,7 @@ class TestStudentView(TestLtiConsumerXBlock):
         """
         Test when `launch_target` is iframe
         """
-        self.xblock.launch_target = 'new_window'
+        self.effective.open_tool_in = 'new_window'
         fragment = self.xblock.student_view({})
 
         self.assertIn(HTML_LAUNCH_NEW_WINDOW_BUTTON, fragment.content)
@@ -1144,7 +1292,7 @@ class TestStudentView(TestLtiConsumerXBlock):
         """
         Test `launch_url` has not been configured
         """
-        self.xblock.launch_url = ''
+        self.effective.lti_1p1_launch_url = ''
         fragment = self.xblock.student_view({})
 
         self.assertIn(HTML_ERROR_MESSAGE, fragment.content)
@@ -1153,8 +1301,8 @@ class TestStudentView(TestLtiConsumerXBlock):
         """
         Test `launch_url` has not been configured and `hide_launch` is True
         """
-        self.xblock.launch_url = ''
-        self.xblock.hide_launch = True
+        self.effective.lti_1p1_launch_url = ''
+        self.effective.hide_external_tool = True
         fragment = self.xblock.student_view({})
 
         self.assertNotIn(HTML_ERROR_MESSAGE, fragment.content)
@@ -1349,7 +1497,7 @@ class TestResultServiceHandler(TestLtiConsumerXBlock):
         super().setUp()
         self.lti_provider_key = 'test'
         self.lti_provider_secret = 'secret'
-        self.xblock.accept_grades_past_due = True
+        self.effective.accept_grades_after_due_date = True
         self.mock_lti_consumer = Mock()
         self.xblock.get_lti_consumer = Mock(return_value=self.mock_lti_consumer)
 
@@ -1388,7 +1536,7 @@ class TestResultServiceHandler(TestLtiConsumerXBlock):
         and `is_past_due` is True
         """
         mock_is_past_due.return_value = True
-        self.xblock.accept_grades_past_due = False
+        self.effective.accept_grades_after_due_date = False
         response = self.xblock.result_service_handler(make_request('', 'GET'))
 
         self.assertEqual(response.status_code, 404)
@@ -1642,21 +1790,34 @@ class TestMaxScore(TestLtiConsumerXBlock):
 
     def test_max_score_when_scored(self):
         """
-        Test `max_score` when has_score is True
+        Test `max_score` when grading is enabled
         """
-        self.xblock.has_score = True
-        self.xblock.weight = 1.0
+        self.effective.enable_grading = True
+        self.effective.grade_weight = 1.0
 
         self.assertEqual(self.xblock.max_score(), 1.0)
 
     def test_max_score_when_not_scored(self):
         """
-        Test `max_score` when has_score is False
+        Test `max_score` is None when grading is disabled
+
+        The block fields are set to prove an internal placement does not read them.
         """
-        self.xblock.has_score = False
+        self.xblock.has_score = True
         self.xblock.weight = 1.0
+        self.effective.enable_grading = False
+        self.effective.grade_weight = 1.0
 
         self.assertIsNone(self.xblock.max_score())
+
+    def test_max_score_when_weight_is_zero(self):
+        """
+        Test a weight of 0 with grading enabled is a real maximum of 0, not a missing maximum
+        """
+        self.effective.enable_grading = True
+        self.effective.grade_weight = 0
+
+        self.assertEqual(self.xblock.max_score(), 0)
 
 
 class TestSetScore(TestLtiConsumerXBlock):
@@ -1799,6 +1960,7 @@ class TestGetContext(TestLtiConsumerXBlock):
         Test `_get_context_for_template` returns dict with correct keys
         """
         self.xblock.lti_version = lti_version
+        self.effective.version = lti_version
         context_keys = (
             'launch_url', 'lti_1p3_launch_url', 'element_id', 'element_class', 'launch_target',
             'display_name', 'form_url', 'hide_launch', 'has_score', 'weight', 'module_score',
@@ -1818,6 +1980,25 @@ class TestGetContext(TestLtiConsumerXBlock):
 
         if lti_version == 'lti_1p3':
             lti_api_patch.assert_called_once()
+
+    def test_modal_offset_defaults_only_when_unset(self):
+        """An explicit 0 is a size, not an unset value: only None takes the default."""
+        get_offset = self.xblock._get_modal_position_offset  # pylint: disable=protected-access
+
+        self.assertEqual(get_offset(None), 10)
+        self.assertEqual(get_offset(0), 50)
+        self.assertEqual(get_offset(80), 10)
+
+    def test_context_keeps_explicit_zero_modal_size(self):
+        """A resolved 0 modal size stays a real size instead of becoming the default 80."""
+        self.effective.modal_height = 0
+        self.effective.modal_width = 0
+
+        context = self.xblock._get_context_for_template()  # pylint: disable=protected-access
+
+        self.assertEqual(context['modal_vertical_offset'], 50)
+        self.assertEqual(context['modal_horizontal_offset'], 50)
+        self.assertEqual(context['modal_width'], 0)
 
     @ddt.data('a', 'abbr', 'acronym', 'b', 'blockquote', 'code', 'em', 'i', 'li', 'ol', 'strong', 'ul', 'img')
     def test_comment_allowed_tags(self, tag):
@@ -1840,13 +2021,28 @@ class TestGetContext(TestLtiConsumerXBlock):
 
         self.assertIn('<img src="example.com/image.jpeg">', context['comment'])
 
-    @ddt.data('external', 'database')
-    def test_context_correct_origin_1p1(self, config_type):
+    def test_context_correct_origin_1p1_internal(self):
         """
-        Test that certain context keys relevant to 1.1 integrations that can be stored on different types of
-        config_stores are pulled from the appropriate config_store.
+        A bound internal placement takes the resolved launch URL, even with a stale block type
         """
-        self.xblock.config_type = config_type
+        self.xblock.config_type = 'external'
+        self.xblock.external_config = 'stale-plugin:stale-id'
+        self.xblock.launch_url = 'block-owned.example'
+        self.effective.lti_1p1_launch_url = 'www.example.org'
+        self.xblock.get_lti_consumer = Mock()
+
+        context = self.xblock._get_context_for_template()  # pylint: disable=protected-access
+
+        self.assertEqual(context['launch_url'], 'www.example.org')
+        self.xblock.get_lti_consumer.assert_not_called()
+
+    def test_context_correct_origin_1p1_external(self):
+        """
+        An external placement still takes its launch URL from the provider consumer
+        """
+        self.xblock.config_type = 'new'
+        self.xblock.launch_url = 'block-owned.example'
+        self.effective.is_external = True
 
         lti_launch_url = 'www.example.org'
         mock_lti_consumer = Mock()
@@ -1864,13 +2060,15 @@ class TestGetContext(TestLtiConsumerXBlock):
         config_stores are pulled from the appropriate config_store.
         """
         self.xblock.lti_version = 'lti_1p3'
-        self.xblock.config_type = 'database'
+        self.xblock.config_type = 'external'
         self.xblock.lti_1p3_launch_url = 'www.example.com'
         mock_get_lti_1p3_content_url.return_value = 'lti_1p3_content_url'
 
         lti_1p3_launch_url = 'www.example.org'
+        self.effective.version = 'lti_1p3'
+        self.effective.lti_1p3_launch_url = lti_1p3_launch_url
         mock_lti_consumer = Mock()
-        type(mock_lti_consumer).launch_url = PropertyMock(return_value=lti_1p3_launch_url)
+        type(mock_lti_consumer).launch_url = PropertyMock(return_value='consumer-owned.example')
         self.xblock.get_lti_consumer = Mock(return_value=mock_lti_consumer)
 
         # Calling _get_lti_block_launch_handler raises an error because the mocked XBlock location attribute does not
@@ -1925,7 +2123,7 @@ class TestProcessorSettings(TestLtiConsumerXBlock):
         assert not processors, 'The processor list should empty by default.'
 
     def test_enable_processor(self):
-        self.xblock.enable_processors = True
+        self.effective.send_extra_parameters = True
         with patch('lti_consumer.lti_xblock.LtiConsumerXBlock.get_settings', return_value=self.settings):
             processors = list(self.xblock.get_parameter_processors())
             assert len(processors) == 1, 'One processor should be enabled'
@@ -1933,7 +2131,8 @@ class TestProcessorSettings(TestLtiConsumerXBlock):
             assert processors[0] == test_utils.dummy_processor, 'Should load the correct function'
 
     def test_disabled_processors(self):
-        self.xblock.enable_processors = False
+        # The block field is set to prove an internal placement does not read it.
+        self.xblock.enable_processors = True
         with patch('lti_consumer.lti_xblock.LtiConsumerXBlock.get_settings', return_value=self.settings):
             processors = list(self.xblock.get_parameter_processors())
             assert not processors, 'No processor should be enabled'
@@ -1954,7 +2153,7 @@ class TestProcessorSettings(TestLtiConsumerXBlock):
     })
     @patch('lti_consumer.lti_xblock.log')
     def test_faulty_configs(self, settings, mock_log):
-        self.xblock.enable_processors = True
+        self.effective.send_extra_parameters = True
         with patch('lti_consumer.lti_xblock.LtiConsumerXBlock.get_settings', return_value=settings):
             with self.assertRaises(Exception):
                 list(self.xblock.get_parameter_processors())
@@ -1990,6 +2189,13 @@ class TestLtiConsumer1p3XBlock(TestCase):
             'lti_1p3_oidc_url': 'http://tool.example/oidc',
         }
         self.xblock = make_xblock('lti_consumer', LtiConsumerXBlock, self.xblock_attributes)
+        self.effective = patch_effective_configuration(
+            self,
+            version='lti_1p3',
+            lti_1p3_launch_url='http://tool.example/launch',
+        )
+        self.xblock.config_type = 'database'
+        bind_internal_placement(self.xblock)
 
         self.mock_filter_enabled_patcher = patch("lti_consumer.lti_xblock.external_config_filter_enabled")
         self.mock_database_config_enabled_patcher = patch("lti_consumer.lti_xblock.database_config_enabled")
@@ -2016,7 +2222,7 @@ class TestLtiConsumer1p3XBlock(TestCase):
         processor_mock = Mock(return_value={'test3': 'test'}, lti_xblock_default_params={})
         get_parameter_processors_mock.return_value = [processor_mock]
         mock_resolve_custom_parameter_template.return_value = ''
-        self.xblock.custom_parameters = ['test1=test', 'test2=${test}']
+        self.effective.custom_parameters = ['test1=test', 'test2=${test}']
 
         self.assertDictEqual(
             self.xblock.get_lti_1p3_custom_parameters(),
@@ -2041,7 +2247,7 @@ class TestLtiConsumer1p3XBlock(TestCase):
         processor_mock = Mock(side_effect=Exception())
         get_parameter_processors_mock.return_value = [processor_mock]
         mock_resolve_custom_parameter_template.return_value = ''
-        self.xblock.custom_parameters = ['test1=test', 'test2=${test}']
+        self.effective.custom_parameters = ['test1=test', 'test2=${test}']
 
         self.assertDictEqual(
             self.xblock.get_lti_1p3_custom_parameters(),
@@ -2317,21 +2523,53 @@ class TestLtiConsumer1p3XBlock(TestCase):
         mock_course.lti_passports = ["lti_passport_name:key:secret"]
         mock_get_course_by_id.return_value = mock_course
 
-        self.xblock.config_type = 'external'
-        self.xblock.external_config = 'test-plugin:test-id'
+        # A provider lookup failure surfaces as a resolution failure and must not break the editor.
         self.xblock.lti_version = 'lti_1p1'
 
-        with patch('lti_consumer.lti_xblock.get_external_config_from_filter') as mock_filter:
-            mock_filter.side_effect = Exception("Filter service unavailable")
+        with patch.object(
+            LtiConsumerXBlock, 'get_effective_configuration',
+            side_effect=Exception("Filter service unavailable"),
+        ):
             # Must not raise.
             fragment = self.xblock.studio_view({})
 
-        # Even with a filter failure, fragment renders and falls back
-        # to the block's own lti_version as effective version.
+        # The editor renders and shows the stored version for display only.
         self.assertEqual(
             fragment.json_init_args['effectiveLtiVersion'],
             'lti_1p1',
         )
+
+    @patch('lti_consumer.plugin.compat.get_course_by_id')
+    def test_studio_view_renders_without_a_placement(self, mock_get_course_by_id):
+        """
+        A block with no placement yet still renders its editor; runtime keeps raising instead.
+        """
+        mock_i18n_service = gettext.NullTranslations()
+        mock_i18n_service.ugettext = mock_i18n_service.gettext
+
+        def runtime_service_side_effect(_block, service_name):
+            if service_name == 'i18n':
+                return mock_i18n_service
+            return None
+
+        self.xblock.runtime.service.side_effect = runtime_service_side_effect
+
+        mock_course = Mock()
+        mock_course.display_name_with_default = "DemoX"
+        mock_course.display_org_with_default = "edX"
+        mock_course.lti_passports = []
+        mock_get_course_by_id.return_value = mock_course
+
+        self.xblock.lti_version = 'lti_1p1'
+
+        with patch.object(
+            LtiConsumerXBlock, 'get_effective_configuration',
+            side_effect=LtiConfigurationError("no placement"),
+        ):
+            fragment = self.xblock.studio_view({})
+
+        self.assertEqual(fragment.json_init_args['effectiveLtiVersion'], 'lti_1p1')
+        self.assertEqual(fragment.js_init_fn, 'LtiConsumerXBlockInitStudio')
 
     @patch('lti_consumer.lti_xblock.LtiConsumerXBlock.get_lti_1p3_launch_data')
     @patch('lti_consumer.api.get_lti_1p3_launch_info')
@@ -2452,7 +2690,7 @@ class TestLti1p3AccessTokenEndpoint(TestLtiConsumerXBlock):
         private_jwk = json.loads(algo_obj.to_jwk(private_key))
         private_jwk['kid'] = self.rsa_key_id
         self.key = PyJWK.from_dict(private_jwk)
-        self.public_key = rsa_key.public_key().export_key('PEM')
+        self.public_key = rsa_key.public_key().export_key('PEM').decode('utf-8')
 
         self.xblock_attributes = {
             'lti_version': 'lti_1p3',
@@ -2464,6 +2702,19 @@ class TestLti1p3AccessTokenEndpoint(TestLtiConsumerXBlock):
             'lti_1p3_tool_public_key': self.public_key,
         }
         self.xblock = make_xblock('lti_consumer', LtiConsumerXBlock, self.xblock_attributes)
+        self.xblock.config_type = 'database'
+        self.effective = patch_effective_configuration(
+            self,
+            version='lti_1p3',
+            lti_1p3_launch_url='http://tool.example/launch',
+        )
+        self.placement = bind_internal_placement(
+            self.xblock,
+            configuration_values={
+                'lti_1p3_tool_key_mode': 'public_key',
+                'lti_1p3_tool_public_key': self.public_key,
+            },
+        )
 
         patcher = patch(
             'lti_consumer.plugin.compat.load_enough_xblock',
@@ -2476,8 +2727,9 @@ class TestLti1p3AccessTokenEndpoint(TestLtiConsumerXBlock):
         """
         Test that the LTI 1.3 access token endpoint is unavailable when using 1.1.
         """
-        self.xblock.lti_version = 'lti_1p1'
-        self.xblock.save()
+        self.effective.version = 'lti_1p1'
+        self.placement.version = 'lti_1p1'
+        self.placement.save()
 
         request = make_request(json.dumps({}), 'POST')
         request.content_type = 'application/json'
@@ -2529,8 +2781,10 @@ class TestLti1p3AccessTokenEndpoint(TestLtiConsumerXBlock):
         """
         Test request with valid JWT but no matching key to check signature.
         """
-        self.xblock.lti_1p3_tool_public_key = ''
-        self.xblock.save()
+        # The tool key is configuration-owned now, so clear it there.
+        configuration = self.placement.reusable_configuration
+        configuration.lti_1p3_tool_public_key = ''
+        configuration.save()
 
         jwt_token = create_jwt(self.key, {})
         request = make_jwt_request(jwt_token)
@@ -2635,6 +2889,19 @@ class TestLti1p3AccessTokenJWK(TestBaseWithPatch):
             'lti_1p3_oidc_url': 'http://tool.example/oidc',
             'lti_1p3_tool_keyset_url': "http://tool.example/keyset",
         })
+        self.xblock.config_type = 'database'
+        self.effective = patch_effective_configuration(
+            self,
+            version='lti_1p3',
+            lti_1p3_launch_url='http://tool.example/launch',
+        )
+        self.placement = bind_internal_placement(
+            self.xblock,
+            configuration_values={
+                'lti_1p3_tool_key_mode': 'keyset_url',
+                'lti_1p3_tool_keyset_url': 'http://tool.example/keyset',
+            },
+        )
 
         rsa_key = RSA.generate(2048).export_key('PEM')
         self.algo_obj = jwt.get_algorithm_by_name('RS256')
@@ -2765,3 +3032,270 @@ class TestGetPiiSharingEnabled(TestLtiConsumerXBlock):
             self.xblock.scope_ids.usage_id.context_key,
             ask_to_send_username or ask_to_send_full_name or ask_to_send_email,
         )
+
+
+class TestEffectiveConfigurationBoundary(TestBaseWithPatch):
+    """
+    Acceptance tests for the block read path that goes through the resolver.
+
+    These use the real resolver: the other tests patch it to assert routing alone.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.xblock = make_xblock('lti_consumer', LtiConsumerXBlock, {
+            'launch_url': 'http://www.example.com',
+            'display_name': 'Block display name',
+        })
+
+    def test_resolver_receives_the_block_placement(self):
+        """
+        The block resolves the placement row bound to its own usage key
+        """
+        placement = bind_internal_placement(self.xblock)
+        with patch('lti_consumer.effective.resolve_lti_configuration') as mock_resolve:
+            self.xblock.get_effective_configuration()
+
+        mock_resolve.assert_called_once_with(placement)
+
+    def test_missing_placement_is_an_explicit_configuration_error(self):
+        """
+        A block with no placement row raises: there is no block-field fallback
+        """
+        with self.assertRaises(LtiConfigurationError):
+            self.xblock.get_effective_configuration()
+
+    def test_unbound_placement_is_an_explicit_configuration_error(self):
+        """
+        A placement with no reusable configuration raises instead of reading block fields
+        """
+        LtiConfiguration.objects.create(
+            location=self.xblock.scope_ids.usage_id,
+            config_store=LtiConfiguration.CONFIG_ON_DB,
+            version=LtiConfiguration.LTI_1P3,
+        )
+
+        with self.assertRaises(LtiConfigurationError):
+            self.xblock.get_effective_configuration()
+
+    def test_placement_and_binding_are_read_in_one_query(self):
+        """
+        The placement is fetched with its bound configuration, so resolution costs one query
+        """
+        bind_internal_placement(self.xblock)
+
+        with self.assertNumQueries(1):
+            self.xblock.get_effective_configuration()
+
+    def test_resolving_performs_no_write(self):
+        """
+        Resolving never creates a configuration or generates keys
+        """
+        placement = bind_internal_placement(self.xblock)
+        placement_versions = (placement.version, placement.reusable_configuration_id)
+        configurations = ReusableLtiConfiguration.objects.count()
+
+        self.xblock.get_effective_configuration()
+
+        placement.refresh_from_db()
+        self.assertEqual(
+            (placement.version, placement.reusable_configuration_id),
+            placement_versions,
+        )
+        self.assertEqual(ReusableLtiConfiguration.objects.count(), configurations)
+
+    def test_presentation_and_grading_use_the_resolved_values(self):
+        """
+        Presentation and grading read the resolved settings, not the block fields
+        """
+        bind_internal_placement(
+            self.xblock,
+            display_name='Shared display name',
+            enable_grading=True,
+            grade_weight=0,
+            hide_external_tool=True,
+            open_tool_in='modal',
+            custom_parameters=['page=1'],
+        )
+
+        # Presented from the resolved settings, never from the block fields.
+        settings = self.xblock._get_runtime_settings()  # pylint: disable=protected-access
+
+        self.assertEqual(settings['display_name'], 'Shared display name')
+        self.assertEqual(settings['launch_target'], 'modal')
+        self.assertTrue(settings['hide_launch'])
+        self.assertEqual(settings['custom_parameters'], ['page=1'])
+        self.assertTrue(self.xblock.has_score)
+        self.assertEqual(self.xblock.weight, 0)
+        self.assertEqual(self.xblock.max_score(), 0)
+        self.assertTrue(self.xblock.is_graded())
+        self.assertEqual(
+            self.xblock.prefixed_custom_parameters['custom_component_display_name'],
+            'Shared display name',
+        )
+
+    def test_stale_block_external_type_does_not_reach_the_provider(self):
+        """
+        A converted internal placement ignores a stale block external type and id
+        """
+        bind_internal_placement(
+            self.xblock,
+            version=LtiConfiguration.LTI_1P3,
+            display_name='Shared display name',
+            enable_grading=True,
+            grade_weight=5,
+        )
+        self.xblock.config_type = 'external'
+        self.xblock.external_config = 'stale-plugin:stale-id'
+
+        with patch('lti_consumer.models.get_external_config_from_filter') as mock_provider:
+            settings = self.xblock._get_runtime_settings()  # pylint: disable=protected-access
+            version = self.xblock.get_resolved_lti_version()
+
+        mock_provider.assert_not_called()
+        self.assertEqual(settings['display_name'], 'Shared display name')
+        self.assertEqual(self.xblock.weight, 5)
+        self.assertEqual(version, LtiConfiguration.LTI_1P3)
+
+    def test_stored_external_placement_uses_the_provider_despite_a_new_block_type(self):
+        """
+        A converted external placement keeps its dynamic provider contract and block presentation
+        """
+        bind_external_placement(self.xblock, external_id='provider:tool')
+        self.xblock.config_type = 'new'
+
+        provider_config = {
+            'version': LtiConfiguration.LTI_1P3,
+            'lti_1p1_launch_url': 'http://provider.example/launch',
+        }
+        with patch('lti_consumer.models.get_external_config_from_filter',
+                   return_value=provider_config) as mock_provider:
+            settings = self.xblock._get_runtime_settings()  # pylint: disable=protected-access
+            version = self.xblock.get_resolved_lti_version()
+
+        mock_provider.assert_called_with({}, 'provider:tool')
+        self.assertEqual(version, LtiConfiguration.LTI_1P3)
+        self.assertEqual(settings['display_name'], 'Block display name')
+        self.assertEqual(settings['lti_1p1_launch_url'], str(self.xblock.launch_url))
+
+    def test_provider_lookup_uses_the_stored_external_id(self):
+        """
+        A stale block external id is never used to reach the provider
+        """
+        bind_external_placement(self.xblock, external_id='provider:real')
+        self.xblock.external_config = 'stale:other'
+
+        with patch('lti_consumer.models.get_external_config_from_filter', return_value={}) as mock_provider:
+            self.xblock.get_resolved_lti_version()
+
+        mock_provider.assert_called_with({}, 'provider:real')
+
+    def test_version_dispatch_uses_the_resolved_version(self):
+        """
+        Dispatch reads the resolved version; the raw nullable block field is not consulted
+        """
+        bind_internal_placement(self.xblock, version=LtiConfiguration.LTI_1P3)
+        self.xblock.lti_version = 'lti_1p1'
+
+        self.assertEqual(self.xblock.get_resolved_lti_version(), LtiConfiguration.LTI_1P3)
+
+    def test_placement_version_override_wins_over_the_shared_version(self):
+        """
+        A placement version override resolves over the bound configuration's version
+        """
+        bind_internal_placement(self.xblock, version=LtiConfiguration.LTI_1P1)
+        LtiConfiguration.objects.filter(location=self.xblock.scope_ids.usage_id).update(
+            version=LtiConfiguration.LTI_1P3,
+        )
+
+        self.assertEqual(self.xblock.get_resolved_lti_version(), LtiConfiguration.LTI_1P3)
+
+    def test_accepts_grades_after_due_date_uses_the_resolved_value(self):
+        """
+        The due-date acceptance used by grading reads the resolved settings
+        """
+        bind_internal_placement(self.xblock, accept_grades_after_due_date=False)
+        self.xblock.accept_grades_past_due = True
+
+        self.assertFalse(self.xblock.accepts_grades_after_due_date())
+
+    def test_presentation_stays_block_owned_for_external_configurations(self):
+        """
+        The external provider contract carries no presentation members, so the block owns them.
+
+        The block keeps a stale `new` type to prove the persisted placement decides.
+        """
+        self.xblock.config_type = 'new'
+        self.xblock.display_name = 'Block display name'
+        self.xblock.hide_launch = True
+        patch_effective_configuration(
+            self,
+            is_external=True,
+            version='lti_1p1',
+            external_config={'lti_1p1_launch_url': 'http://tool.example/launch'},
+        )
+
+        with patch.object(LtiConsumerXBlock, 'get_lti_consumer',
+                          return_value=Mock(lti_launch_url='http://tool.example/launch')):
+            context = self.xblock._get_context_for_template()  # pylint: disable=protected-access
+
+        self.assertEqual(context['display_name'], 'Block display name')
+        self.assertTrue(context['hide_launch'])
+
+
+class TestEffectiveGradingFields(TestBaseWithPatch):
+    """
+    The platform reads `has_score` and `weight` from the block before calling max_score().
+
+    The effective fields answer that read from the persisted placement, while authoring,
+    storage, `is_set_on` and export keep the stored values.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.xblock = make_xblock('lti_consumer', LtiConsumerXBlock, {
+            'has_score': False,
+            'weight': 1.0,
+        })
+
+    def test_platform_read_uses_the_shared_grading_values(self):
+        """
+        A bound internal placement exposes its resolved grading metadata to platform getattr
+        """
+        bind_internal_placement(self.xblock, enable_grading=True, grade_weight=5)
+
+        self.assertTrue(self.xblock.has_score)
+        self.assertEqual(self.xblock.weight, 5)
+        self.assertEqual(self.xblock.max_score(), 5)
+
+        # Authoring, storage and export read the stored values.
+        self.assertFalse(self._stored('has_score').read_from(self.xblock))
+        self.assertEqual(self._stored('weight').read_from(self.xblock), 1.0)
+        # The stored value stays set, so Studio keeps showing the authored choice.
+        self.assertTrue(self._stored('has_score').is_set_on(self.xblock))
+
+    def test_missing_configuration_reports_safe_metadata_defaults(self):
+        """
+        An unconfigured component looks ungraded instead of revealing a stale author value
+        """
+        self.assertFalse(self.xblock.has_score)
+        self.assertEqual(self.xblock.weight, 0.0)
+        self.assertIsNone(self.xblock.max_score())
+        self.assertFalse(LtiConfiguration.objects.exists())
+
+    def test_external_placement_keeps_the_stored_grading_values(self):
+        """
+        An external reference owns grading on the block, so the stored values win
+        """
+        bind_external_placement(self.xblock)
+        self.xblock.has_score = True
+        self.xblock.weight = 2.5
+
+        self.assertTrue(self.xblock.has_score)
+        self.assertEqual(self.xblock.weight, 2.5)
+        self.assertEqual(self.xblock.max_score(), 2.5)
+        self.assertTrue(self._stored('has_score').read_from(self.xblock))
+
+    def _stored(self, field_name):
+        """Return a field descriptor, whose storage read is the authoring/export value."""
+        return self.xblock.fields[field_name]  # pylint: disable=unsubscriptable-object

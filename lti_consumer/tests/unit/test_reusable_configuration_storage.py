@@ -7,6 +7,7 @@ from django.core.exceptions import FieldDoesNotExist
 from django.db import IntegrityError, transaction
 from django.test import TestCase
 
+from lti_consumer.effective import PLACEMENT_CONFIGURATION_FIELDS
 from lti_consumer.models import LtiConfiguration, ReusableLtiConfiguration
 
 COURSE_KEY = 'course-v1:Org+Course+Run'
@@ -89,6 +90,17 @@ class ReusableConfigurationStorageTests(TestCase):
         self.assertEqual(placement.reusable_configuration, configuration)
         self.assertEqual(placement.reusable_configuration_id, configuration.pk)
         self.assertEqual(list(configuration.lticonfiguration_set.all()), [placement])
+
+    def test_placement_overrides_are_nullable_columns(self):
+        """Every override/frozen column is NULL until a value is explicitly stored."""
+        placement = LtiConfiguration.objects.create(
+            config_store='CONFIG_ON_DB',
+        )
+        for name in PLACEMENT_CONFIGURATION_FIELDS:
+            with self.subTest(field=name):
+                self.assertIsNone(getattr(placement, name))
+
+        self.assertFalse(self.make_configuration().hide_external_tool)
 
     def test_reads_never_generate_signing_keys(self):
         configuration = self.make_configuration(name='No keys', version=ReusableLtiConfiguration.LTI_1P3)

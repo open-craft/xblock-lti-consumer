@@ -27,6 +27,7 @@ from rest_framework.response import Response
 from rest_framework.status import HTTP_200_OK, HTTP_400_BAD_REQUEST, HTTP_403_FORBIDDEN, HTTP_404_NOT_FOUND
 
 from lti_consumer.api import get_lti_pii_sharing_state_for_course, validate_lti_1p3_launch_data
+from lti_consumer.effective import LtiConfigurationError
 from lti_consumer.exceptions import ExternalConfigurationNotFound, LtiError
 from lti_consumer.filters import get_external_config_from_filter
 from lti_consumer.lti_1p3.consumer import LtiConsumer1p3, LtiProctoringConsumer
@@ -169,21 +170,6 @@ def has_block_access(user, block, course_key):
     return course_access and block_access
 
 
-def _configuration_version(configuration):
-    """Return a configuration's LTI version.
-
-    Converted passport rows may not carry a version yet, so a bound placement is the
-    fallback for legacy rows. A configuration with neither still resolves as unusable.
-    """
-    if configuration.version:
-        return configuration.version
-    return (
-        LtiConfiguration.objects.filter(reusable_configuration=configuration)
-        .values_list('version', flat=True)
-        .first()
-    )
-
-
 @require_http_methods(["GET"])
 def public_keyset_endpoint(
     request,
@@ -224,12 +210,13 @@ def public_keyset_endpoint(
                 version = external_config.get("version")
                 public_jwk = external_config.get("lti_1p3_public_jwk", {})
             else:
-                version = lti_config.version
+                version = lti_config.get_effective_version()
                 public_jwk = lti_config.lti_1p3_public_jwk
         elif passport_id:
             # A configuration is not a placement, so it must resolve without one.
             lti_config = ReusableLtiConfiguration.objects.get(passport_id=passport_id)
-            version = _configuration_version(lti_config)
+            # Registration is configuration-owned: a placement never lends it a version.
+            version = lti_config.version
             # Read the stored JWK only: a GET must never generate or persist key material.
             public_jwk = (
                 json.loads(lti_config.lti_1p3_internal_public_jwk)
@@ -260,6 +247,7 @@ def public_keyset_endpoint(
         LtiConfiguration.DoesNotExist,
         ReusableLtiConfiguration.DoesNotExist,
         ExternalConfigurationNotFound,
+        LtiConfigurationError,
         LtiError,
     ) as exc:
         log.info(
@@ -341,11 +329,12 @@ def launch_gate_endpoint(request, suffix=None):  # pylint: disable=unused-argume
         lti_config = LtiConfiguration.objects.get(
             config_id=config_id
         )
-    except (LtiConfiguration.DoesNotExist, ValidationError) as exc:
+        effective_version = lti_config.get_effective_version()
+    except (LtiConfiguration.DoesNotExist, LtiConfigurationError, ValidationError) as exc:
         log.error("Invalid config_id '%s' for LTI 1.3 Launch callback", config_id)
         raise Http404 from exc
 
-    if lti_config.version != LtiConfiguration.LTI_1P3:
+    if effective_version != LtiConfiguration.LTI_1P3:
         error_msg = f"The LTI Version of the following configuration is not LTI 1.3: {lti_config}"
         log.error(error_msg)
         return render(
@@ -479,7 +468,7 @@ def launch_gate_endpoint(request, suffix=None):  # pylint: disable=unused-argume
             )
         })
         event = {
-            'lti_version': lti_config.version,
+            'lti_version': effective_version,
             'user_roles': user_role,
             'launch_url': context['launch_url']
         }
@@ -544,13 +533,14 @@ def access_token_endpoint(
         lti_consumer = None
         if usage_id:
             lti_config = LtiConfiguration.objects.get(location=UsageKey.from_string(usage_id))
-            version = lti_config.version
+            version = lti_config.get_effective_version()
             lti_consumer = lti_config.get_lti_consumer()
         elif passport_id:
             # A configuration resolves on its own: no placement lookup, and no key
             # generation on the read path.
             lti_config = ReusableLtiConfiguration.objects.get(passport_id=passport_id)
-            version = _configuration_version(lti_config)
+            # Registration is configuration-owned: a placement never lends it a version.
+            version = lti_config.version
             if not lti_config.lti_1p3_internal_private_key:
                 # No signing material yet; issuing a token would have to generate it.
                 raise ReusableLtiConfiguration.DoesNotExist
@@ -592,6 +582,7 @@ def access_token_endpoint(
         LtiConfiguration.DoesNotExist,
         ReusableLtiConfiguration.DoesNotExist,
         ExternalConfigurationNotFound,
+        LtiConfigurationError,
     ) as exc:
         log.info(
             "Error while retrieving access token for ID %s: %s",
@@ -701,9 +692,9 @@ def deep_linking_response_endpoint(request, lti_config_id=None):
         # saved successfully and auto-close after a few seconds.
         return render(request, 'html/lti-dl/dl_response_saved.html')
 
-    # If LtiConfiguration doesn't exist, error with 404 status.
-    except LtiConfiguration.DoesNotExist as exc:
-        log.info("LtiConfiguration %r does not exist: %s", lti_config_id, exc)
+    # If LtiConfiguration doesn't exist or cannot resolve, error with 404 status.
+    except (LtiConfiguration.DoesNotExist, LtiConfigurationError) as exc:
+        log.info("LtiConfiguration %r does not exist or is not configured: %s", lti_config_id, exc)
         raise Http404 from exc
     # If the deep linking content type is not supported
     except LtiDeepLinkingContentTypeNotSupported as exc:
@@ -1076,7 +1067,13 @@ def start_proctoring_assessment_endpoint(request):
         )
         return render(request, 'html/lti_proctoring_start_error.html', status=HTTP_404_NOT_FOUND)
 
-    lti_consumer = lti_config.get_lti_consumer()
+    try:
+        lti_consumer = lti_config.get_lti_consumer()
+    except LtiConfigurationError as exc:
+        log.error(
+            "LTI configuration for resource_link id '%s' is not configured: %s", resource_link_id, exc,
+        )
+        return render(request, 'html/lti_proctoring_start_error.html', status=HTTP_404_NOT_FOUND)
 
     if not isinstance(lti_consumer, LtiProctoringConsumer):
         log.info("Proctoring Services for LTIConfiguration with config_id %s are not enabled", lti_config.config_id)

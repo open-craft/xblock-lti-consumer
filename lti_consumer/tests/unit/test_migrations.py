@@ -14,6 +14,8 @@ from django.db.migrations.executor import MigrationExecutor
 from django.db.models.deletion import ProtectedError
 from django.test import TransactionTestCase
 
+from lti_consumer.effective import PLACEMENT_CONFIGURATION_FIELDS
+
 
 class Test0021CreateLti1p3Passport(TransactionTestCase):
     """Exercise data migration 0021 across success and edge-case paths."""
@@ -390,6 +392,14 @@ class Test0024PassportExtension(TransactionTestCase):
             lti_1p3_oidc_url="https://tool.example/oidc",
             lti_1p3_redirect_uris=["https://tool.example/redirect"],
             lti_advantage_ags_mode="programmatic",
+            # Explicit falsy values, not schema defaults: migration 0024 is structural, so
+            # these are stored values that must survive it unchanged.
+            lti_advantage_enable_nrps=False,
+            lti_advantage_deep_linking_enabled=False,
+            lti_advantage_deep_linking_launch_url="",
+            lti_1p1_launch_url="",
+            lti_1p1_client_key="",
+            lti_1p1_client_secret="",
         )
 
     def migrate(self):
@@ -397,6 +407,12 @@ class Test0024PassportExtension(TransactionTestCase):
         self.executor.loader.build_graph()
         self.executor.migrate(self.migrate_to)
         return self.executor.loader.project_state(self.migrate_to).apps
+
+    @classmethod
+    def tearDownClass(cls):
+        super().tearDownClass()
+        # Later migration classes and modules expect the latest graph state.
+        call_command("migrate", "lti_consumer", verbosity=0, interactive=False)
 
     def test_rename_keeps_one_table_and_preserves_passport_rows(self):
         """The passport table is renamed, never recreated, and every value survives."""
@@ -533,6 +549,150 @@ class Test0024PassportExtension(TransactionTestCase):
         self.migrate()
 
 
+class Test0025PlacementOverrides(TransactionTestCase):
+    """Exercise the 0025 placement override DDL without rewriting stored values."""
+
+    reset_sequences = True
+
+    migrate_from = [("lti_consumer", "0024_reusable_lti_configuration")]
+    migrate_to = [("lti_consumer", "0025_placement_overrides")]
+
+    def setUp(self):
+        super().setUp()
+        self.executor = MigrationExecutor(connection)
+        self.executor.migrate(self.migrate_from)
+
+        old_apps = self.executor.loader.project_state(self.migrate_from).apps
+        LtiConfiguration = old_apps.get_model("lti_consumer", "LtiConfiguration")
+        ReusableLtiConfiguration = old_apps.get_model("lti_consumer", "ReusableLtiConfiguration")
+
+        # Registration identity and signing material live on the shared configuration.
+        self.configuration = ReusableLtiConfiguration.objects.create(
+            name="Shared configuration",
+            version="lti_1p3",
+            context_type="course",
+            context_key="course-v1:Org+Course+Run",
+            lti_1p3_client_id="shared-client-id",
+            lti_1p3_deployment_id="shared-deployment",
+            lti_1p3_internal_private_key="private-key",
+            lti_1p3_internal_private_key_id="kid",
+            lti_1p3_internal_public_jwk='{"kty": "RSA"}',
+            lti_1p3_tool_public_key="tool-public-key",
+            lti_1p3_tool_keyset_url="https://tool.example/jwks.json",
+        )
+        # Legacy placement values, including stored falsy/blank/list/choice values, are seeded
+        # at 0024 so 0025 must preserve them rather than apply schema defaults.
+        self.placement = LtiConfiguration.objects.create(
+            config_id=uuid.uuid4(),
+            version="lti_1p3",
+            config_store="CONFIG_ON_DB",
+            location="block-v1:Org+Course+Run+type@lti_consumer+block@overrides",
+            reusable_configuration=self.configuration,
+            lti_1p1_launch_url="",
+            lti_1p1_client_key="",
+            lti_1p1_client_secret="",
+            lti_1p3_launch_url="https://tool.example/launch",
+            lti_1p3_oidc_url="https://tool.example/oidc",
+            lti_1p3_redirect_uris=["https://tool.example/redirect"],
+            lti_advantage_deep_linking_enabled=False,
+            lti_advantage_deep_linking_launch_url="",
+            lti_advantage_enable_nrps=False,
+            lti_advantage_ags_mode="programmatic",
+        )
+
+    def migrate(self):
+        """Apply 0025 and return the resulting application state."""
+        self.executor.loader.build_graph()
+        self.executor.migrate(self.migrate_to)
+        return self.executor.loader.project_state(self.migrate_to).apps
+
+    @classmethod
+    def tearDownClass(cls):
+        super().tearDownClass()
+        # Leave the suite on the latest schema even when a test fails early.
+        call_command("migrate", "lti_consumer", verbosity=0, interactive=False)
+
+    def test_override_columns_are_added_empty_and_nullable(self):
+        """0025 adds the override columns nullable, blank and without rewriting stored values."""
+        migration_module = importlib.import_module("lti_consumer.migrations.0025_placement_overrides")
+        self.assertFalse([
+            operation for operation in migration_module.Migration.operations
+            if isinstance(operation, migrations.RunPython)
+        ])
+
+        with mock.patch(
+            "lti_consumer.plugin.compat.load_enough_xblock", side_effect=AssertionError("block read"),
+        ) as mock_load:
+            new_apps = self.migrate()
+        mock_load.assert_not_called()
+
+        LtiConfiguration = new_apps.get_model("lti_consumer", "LtiConfiguration")
+        ReusableLtiConfiguration = new_apps.get_model("lti_consumer", "ReusableLtiConfiguration")
+
+        for name in PLACEMENT_CONFIGURATION_FIELDS:
+            with self.subTest(field=name):
+                field = LtiConfiguration._meta.get_field(name)
+                self.assertTrue(field.null)
+                self.assertTrue(field.blank)
+                self.assertIsNone(field.get_default())
+
+        shared_hide = ReusableLtiConfiguration._meta.get_field("hide_external_tool")
+        self.assertFalse(shared_hide.null)
+        self.assertIs(shared_hide.get_default(), False)
+
+        placement = LtiConfiguration.objects.get(pk=self.placement.pk)
+        self.assertEqual((placement.config_store, placement.version), ("CONFIG_ON_DB", "lti_1p3"))
+        self.assertEqual(placement.reusable_configuration_id, self.configuration.pk)
+        self.assertEqual(placement.lti_1p1_launch_url, "")
+        self.assertEqual(placement.lti_1p1_client_key, "")
+        self.assertEqual(placement.lti_1p1_client_secret, "")
+        self.assertEqual(placement.lti_1p3_launch_url, "https://tool.example/launch")
+        self.assertEqual(placement.lti_1p3_oidc_url, "https://tool.example/oidc")
+        self.assertEqual(placement.lti_1p3_redirect_uris, ["https://tool.example/redirect"])
+        self.assertFalse(placement.lti_advantage_deep_linking_enabled)
+        self.assertEqual(placement.lti_advantage_deep_linking_launch_url, "")
+        self.assertFalse(placement.lti_advantage_enable_nrps)
+        self.assertEqual(placement.lti_advantage_ags_mode, "programmatic")
+
+        for name in (
+            "display_name",
+            "enable_grading",
+            "grade_weight",
+            "accept_grades_after_due_date",
+            "hide_external_tool",
+            "open_tool_in",
+            "inline_height",
+            "modal_height",
+            "modal_width",
+            "launch_button_text",
+            "send_extra_parameters",
+            "custom_parameters",
+            "frozen_lti_1p3_tool_public_key",
+            "frozen_lti_1p3_tool_keyset_url",
+        ):
+            with self.subTest(new_field=name):
+                self.assertIsNone(getattr(placement, name))
+
+        configuration = ReusableLtiConfiguration.objects.get(pk=self.configuration.pk)
+        self.assertEqual(configuration.lti_1p3_client_id, "shared-client-id")
+        self.assertEqual(configuration.lti_1p3_deployment_id, "shared-deployment")
+        self.assertEqual(configuration.lti_1p3_internal_private_key, "private-key")
+        self.assertEqual(configuration.lti_1p3_internal_private_key_id, "kid")
+        self.assertEqual(configuration.lti_1p3_internal_public_jwk, '{"kty": "RSA"}')
+        self.assertEqual(configuration.lti_1p3_tool_public_key, "tool-public-key")
+        self.assertEqual(configuration.lti_1p3_tool_keyset_url, "https://tool.example/jwks.json")
+
+    def test_0025_is_the_terminal_migration(self):
+        """The migration graph for this app ends at 0025."""
+        self.migrate()
+        loader = MigrationExecutor(connection).loader
+        loader.build_graph()
+        self.assertEqual(
+            loader.graph.leaf_nodes("lti_consumer"),
+            [("lti_consumer", "0025_placement_overrides")],
+        )
+
+
 class Test0024ContentTypePreservation(TransactionTestCase):
     """Django's pre_migrate hook must rename the content type in place, keeping its id and grants."""
 
@@ -568,3 +728,9 @@ class Test0024ContentTypePreservation(TransactionTestCase):
         )
         self.assertEqual(Permission.objects.get(pk=permission.pk).content_type_id, content_type_id)
         self.assertTrue(Group.objects.get(pk=group.pk).permissions.filter(pk=permission.pk).exists())
+
+    @classmethod
+    def tearDownClass(cls):
+        super().tearDownClass()
+        # This class migrates the real schema; later modules expect the latest state.
+        call_command("migrate", "lti_consumer", verbosity=0, interactive=False)

@@ -163,6 +163,7 @@ class ReusableCreateTests(ReusableMutationTestCase):
                 'grade_weight': 0.5,
                 'custom_parameters': ['a=b', ' c=d '],
                 'inline_height': 2147483647,
+                'hide_external_tool': True,
             },
         ))
         configuration = result.configuration
@@ -174,6 +175,7 @@ class ReusableCreateTests(ReusableMutationTestCase):
         self.assertEqual(configuration.grade_weight, 0.5)
         self.assertEqual(configuration.custom_parameters, ['a=b', 'c=d'])
         self.assertEqual(configuration.inline_height, 2147483647)
+        self.assertTrue(configuration.hide_external_tool)
 
     def test_create_stores_the_policy_canonical_context(self):
         self.policy.authorize_creation.side_effect = lambda raw: CreationContext(
@@ -266,6 +268,7 @@ class ReusableCreateTests(ReusableMutationTestCase):
             (lti11_data(defaults={'grade_weight': -1}), 'defaults.grade_weight'),
             (lti11_data(defaults={'grade_weight': float('nan')}), 'defaults.grade_weight'),
             (lti11_data(defaults={'enable_grading': 'yes'}), 'defaults.enable_grading'),
+            (lti11_data(defaults={'hide_external_tool': 'yes'}), 'defaults.hide_external_tool'),
             (lti11_data(defaults={'open_tool_in': 'popup'}), 'defaults.open_tool_in'),
             (lti11_data(defaults={'inline_height': -1}), 'defaults.inline_height'),
             (lti11_data(defaults={'inline_height': 2147483648}), 'defaults.inline_height'),
@@ -329,6 +332,7 @@ class ReusableUpdateTests(ReusableMutationTestCase):
                 'grade_weight': 2.5,
                 'custom_parameters': ['a=b'],
                 'open_tool_in': 'modal',
+                'hide_external_tool': True,
             },
         })
         self.assertIsInstance(updated, ReusableLtiConfiguration)
@@ -344,6 +348,7 @@ class ReusableUpdateTests(ReusableMutationTestCase):
         self.assertEqual(stored.grade_weight, 2.5)
         self.assertEqual(stored.custom_parameters, ['a=b'])
         self.assertEqual(stored.open_tool_in, 'modal')
+        self.assertTrue(stored.hide_external_tool)
         self.assertEqual(stored.lti_1p3_tool_public_key, PUBLIC_KEY)
         self.assertEqual(stored.lti_1p3_tool_keyset_url, '')
 

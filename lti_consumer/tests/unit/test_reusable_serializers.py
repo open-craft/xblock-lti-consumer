@@ -24,7 +24,8 @@ DETAIL_RESPONSE_FIELDS = LIST_RESPONSE_FIELDS | {
     'description', 'launch_url', 'oidc_url', 'redirect_uris', 'tool_key_mode', 'tool_key_configured',
     'client_id', 'deployment_id', 'registration_urls', 'display_name', 'enable_grading', 'grade_weight',
     'accept_grades_after_due_date', 'open_tool_in', 'inline_height', 'modal_height', 'modal_width',
-    'launch_button_text', 'send_extra_parameters', 'custom_parameters', 'deep_linking_launch_url',
+    'launch_button_text', 'send_extra_parameters', 'hide_external_tool', 'custom_parameters',
+    'deep_linking_launch_url',
 }
 
 
@@ -71,6 +72,7 @@ class ReusableCreateWireParsingTests(SimpleTestCase):
                 'inline_height': '900',
                 'grade_weight': '2.5',
                 'enable_grading': 'true',
+                'hide_external_tool': 'true',
                 'modal_width': 50,
                 'custom_parameters': ['a=b'],
             },
@@ -89,6 +91,7 @@ class ReusableCreateWireParsingTests(SimpleTestCase):
             'inline_height': 900,
             'grade_weight': 2.5,
             'enable_grading': True,
+            'hide_external_tool': True,
             'modal_width': 50,
             'custom_parameters': ['a=b'],
         })
@@ -148,7 +151,7 @@ class ReusableUpdateWireParsingTests(SimpleTestCase):
                 'tool_key_mode': 'keyset_url',
             },
             'services': {'nrps_enabled': 'false'},
-            'defaults': {'grade_weight': '3', 'modal_width': '50'},
+            'defaults': {'grade_weight': '3', 'modal_width': '50', 'hide_external_tool': 'false'},
         })
         self.assertTrue(serializer.is_valid(), serializer.errors)
         validated = serializer.validated_data
@@ -159,7 +162,9 @@ class ReusableUpdateWireParsingTests(SimpleTestCase):
             'tool_key_mode': 'keyset_url',
         })
         self.assertEqual(validated['services'], {'nrps_enabled': False})
-        self.assertEqual(validated['defaults'], {'grade_weight': 3.0, 'modal_width': 50})
+        self.assertEqual(
+            validated['defaults'], {'grade_weight': 3.0, 'modal_width': 50, 'hide_external_tool': False},
+        )
 
     def test_accepts_an_empty_patch(self):
         serializer = ReusableUpdateInputSerializer(data={})
@@ -248,6 +253,7 @@ class RenderingAllowlistTests(TestCase):
         self.assertFalse(data['can_manage'])
         self.assertEqual(data['launch_url'], 'https://tool.example/launch')
         self.assertIsNone(data['client_id'])
+        self.assertFalse(data['hide_external_tool'])
         self.assertFalse(data['tool_key_configured'])
         self.assertEqual(data['registration_urls'], {})
         self.assertNotIn('not-for-display', str(data))

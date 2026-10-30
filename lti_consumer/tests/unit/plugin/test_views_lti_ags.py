@@ -12,7 +12,7 @@ from django.utils import timezone
 from rest_framework.test import APITransactionTestCase
 
 from lti_consumer.lti_xblock import LtiConsumerXBlock
-from lti_consumer.models import LtiAgsLineItem, LtiAgsScore, LtiConfiguration
+from lti_consumer.models import LtiAgsLineItem, LtiAgsScore, LtiConfiguration, ReusableLtiConfiguration
 from lti_consumer.tests.test_utils import TestBaseWithPatch, make_xblock
 
 
@@ -42,10 +42,21 @@ class LtiAgsLineItemViewSetTestCase(APITransactionTestCase, TestBaseWithPatch):
         }
         self.xblock = make_xblock('lti_consumer', LtiConsumerXBlock, self.xblock_attributes)
 
-        # Create configuration
+        # Create configuration: the placement binds explicitly, and the shared row owns the
+        # registration identity and signing material.
+        self.configuration = ReusableLtiConfiguration.objects.create(
+            name='AGS test configuration',
+            version=ReusableLtiConfiguration.LTI_1P3,
+            context_type='course',
+            context_key='course-v1:edX+DemoX+Demo_Course',
+            lti_advantage_ags_mode='programmatic',
+            lti_1p3_tool_public_key=self.public_key.decode('utf-8'),
+        )
+        self.configuration.generate_lti_1p3_keys_if_missing()
         self.lti_config = LtiConfiguration.objects.create(
             location=self.xblock.scope_ids.usage_id,
-            version=LtiConfiguration.LTI_1P3,
+            config_store=LtiConfiguration.CONFIG_ON_DB,
+            reusable_configuration=self.configuration,
         )
 
         # Patch internal method to avoid calls to modulestore
@@ -62,6 +73,12 @@ class LtiAgsLineItemViewSetTestCase(APITransactionTestCase, TestBaseWithPatch):
         self._compat_mock = compat_mock.start()
         self._compat_mock.get_user_from_external_user_id.return_value = self._mock_user
         self._compat_mock.load_block_as_user.return_value = self.xblock
+
+    def _set_graded(self, accept_after_due=False):
+        """Grading is placement-effective now: set the overrides, not the block fields."""
+        self.lti_config.enable_grading = True
+        self.lti_config.accept_grades_after_due_date = accept_after_due
+        self.lti_config.save()
 
     def _set_lti_token(self, scopes=None):
         """
@@ -485,8 +502,8 @@ class LtiAgsViewSetScoresTests(LtiAgsLineItemViewSetTestCase):
         self._compat_mock.get_user_from_external_user_id.return_value = 'user_mock'
         self.xblock.set_user_module_score = Mock()
 
-        # Set xblock attribute and make score request
-        self.xblock.has_score = True
+        # Set the effective grading override and make score request
+        self._set_graded()
         self._post_lti_score({
             "gradingProgress": "FullyGraded",
         })
@@ -508,8 +525,8 @@ class LtiAgsViewSetScoresTests(LtiAgsLineItemViewSetTestCase):
         self._compat_mock.get_user_from_external_user_id.return_value = 'user_mock'
         self.xblock.set_user_module_score = Mock()
 
-        # Set xblock attribute and make score request
-        self.xblock.has_score = True
+        # Set the effective grading override and make score request
+        self._set_graded()
         self._post_lti_score({
             "scoreGiven": 0,
             "gradingProgress": "FullyGraded",
@@ -530,8 +547,8 @@ class LtiAgsViewSetScoresTests(LtiAgsLineItemViewSetTestCase):
         self._compat_mock.get_user_from_external_user_id.return_value = 'user_mock'
         self.xblock.set_user_module_score = Mock()
 
-        # Set block as graded
-        self.xblock.has_score = True
+        # Set the placement as graded
+        self._set_graded()
 
         # Post and retrieve score object
         self._post_lti_score({
@@ -553,8 +570,8 @@ class LtiAgsViewSetScoresTests(LtiAgsLineItemViewSetTestCase):
         class LmsException(Exception):
             pass
 
-        # Set block as graded
-        self.xblock.has_score = True
+        # Set the placement as graded
+        self._set_graded()
         self.xblock.runtime.publish.side_effect = LmsException
 
         # Return block bypassing LMS API
@@ -589,9 +606,8 @@ class LtiAgsViewSetScoresTests(LtiAgsLineItemViewSetTestCase):
         self._compat_mock.get_user_from_external_user_id.return_value = 'user_mock'
         self.xblock.set_user_module_score = Mock()
 
-        # Change block attribute
-        self.xblock.has_score = True
-        self.xblock.accept_grades_past_due = True
+        # Accept grades after the due date through the placement override
+        self._set_graded(accept_after_due=True)
 
         # Try sending grade after due date
         timezone_patcher.now.return_value = timezone.now() + timedelta(days=30)

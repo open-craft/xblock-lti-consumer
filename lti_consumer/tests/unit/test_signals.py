@@ -145,6 +145,62 @@ class PublishGradeOnScoreUpdateTest(TestCase):
         call_args = self._block_mock.set_user_module_score.call_args.args
         self.assertEqual(call_args[1], 0)
 
+    def test_grade_publish_not_done_when_not_graded(self):
+        """
+        Test that grades are not published when the resolved configuration is not graded.
+        """
+        self._block_mock.is_graded.return_value = False
+
+        line_item = LtiAgsLineItem.objects.create(
+            lti_configuration=self.lti_config,
+            resource_id="test",
+            resource_link_id=self.location,
+            label="test label",
+            score_maximum=100
+        )
+
+        LtiAgsScore.objects.create(
+            line_item=line_item,
+            score_given=1,
+            score_maximum=1,
+            activity_progress=LtiAgsScore.COMPLETED,
+            grading_progress=LtiAgsScore.FULLY_GRADED,
+            user_id="test",
+            timestamp=datetime.now(),
+        )
+
+        self._block_mock.set_user_module_score.assert_not_called()
+        self._signals_compat_mock.get_user_from_external_user_id.assert_not_called()
+
+    def test_grade_publish_not_done_when_past_due_not_accepted(self):
+        """
+        Test that a past-due grade is not published when the resolved configuration does not accept it.
+        """
+        self._block_mock.is_graded.return_value = True
+        self._block_mock.is_past_due.return_value = True
+        self._block_mock.accepts_grades_after_due_date.return_value = False
+
+        line_item = LtiAgsLineItem.objects.create(
+            lti_configuration=self.lti_config,
+            resource_id="test",
+            resource_link_id=self.location,
+            label="test label",
+            score_maximum=100
+        )
+
+        LtiAgsScore.objects.create(
+            line_item=line_item,
+            score_given=1,
+            score_maximum=1,
+            activity_progress=LtiAgsScore.COMPLETED,
+            grading_progress=LtiAgsScore.FULLY_GRADED,
+            user_id="test",
+            timestamp=datetime.now(),
+        )
+
+        self._block_mock.set_user_module_score.assert_not_called()
+        self._signals_compat_mock.get_user_from_external_user_id.assert_not_called()
+
     def test_grade_publish_not_done_when_score_given_missing(self):
         """
         Test that a score with no `scoreGiven` is skipped, e.g. an AGS "erase score" request.
@@ -524,3 +580,20 @@ class TestDuplicateXblockLtiConfiguration(TestCase):
         """Invalid xblock_info logs error."""
         duplicate_xblock_lti_configuration(xblock_info=None)
         mock_log.error.assert_called_once_with("Received null or incorrect data for event")
+
+
+class TestNoAutomaticPassportBridge(TestCase):
+    """
+    The automatic post_save binding bridge is gone: a placement save binds nothing.
+    """
+
+    def test_saving_a_placement_does_not_create_a_reusable_configuration(self):
+        """
+        Test a placement is saved without creating or binding a reusable configuration.
+        """
+        LtiConfiguration.objects.create(
+            location=UsageKey.from_string("block-v1:course+test+2020+type@problem+block@unbound"),
+            version=LtiConfiguration.LTI_1P3,
+        )
+
+        self.assertFalse(ReusableLtiConfiguration.objects.exists())

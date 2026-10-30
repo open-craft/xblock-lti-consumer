@@ -10,6 +10,7 @@ from django.contrib.auth.models import Permission
 from django.test import RequestFactory, TestCase
 from django.urls import reverse
 
+from lti_consumer.effective import PLACEMENT_CONFIGURATION_FIELDS
 from lti_consumer.models import LtiConfiguration, ReusableLtiConfiguration
 from lti_consumer.reusable import create_reusable_configuration
 
@@ -56,6 +57,7 @@ DETAIL_FIELDS = {
     'enable_grading',
     'grade_weight',
     'accept_grades_after_due_date',
+    'hide_external_tool',
     'open_tool_in',
     'inline_height',
     'modal_height',
@@ -293,3 +295,123 @@ class ReusableLtiConfigurationAdminTests(GlobalStaffPatchMixin, TestCase):
         self.assertEqual(self.lti13_config.name, 'Advantage tool')
         self.assertEqual(self.lti13_config.lti_1p3_client_id, self.lti13_client_id)
         self.assertEqual(self.lti13_config.lti_1p3_internal_private_key, self.lti13_private_key)
+
+
+class LtiConfigurationAdminTests(TestCase):
+    """#724 placement admin: resolver storage is inspection-only, proctoring stays editable."""
+
+    def setUp(self):
+        super().setUp()
+        self.user = get_user_model().objects.create_superuser(
+            username='placement-admin-test', email='placement-admin-test@example.com', password=None,
+        )
+        self.client.force_login(self.user)
+        self.request = RequestFactory().get('/admin/')
+        self.request.user = self.user
+        self.model_admin = admin.site.get_model_admin(LtiConfiguration)
+        self.configuration = self._create_configuration('Bound tool')
+        self.other_configuration = self._create_configuration('Other tool')
+        self.placement = LtiConfiguration.objects.create(
+            location='block-v1:VisibleOrg+VisibleCourse+Run+type@lti_consumer+block@placement',
+            config_store=LtiConfiguration.CONFIG_ON_DB,
+            version=LtiConfiguration.LTI_1P3,
+            reusable_configuration=self.configuration,
+            lti_config={'legacy': 'legacy-blob-value'},
+            lti_1p1_client_secret='historical-secret',
+            frozen_lti_1p3_tool_keyset_url='https://historical.example/jwks',
+            display_name='historical title',
+        )
+
+    def _create_configuration(self, name):
+        return create_reusable_configuration(self.user, {
+            'name': name,
+            'version': ReusableLtiConfiguration.LTI_1P3,
+            'context': {'type': 'site'},
+            'lti_1p3': {
+                'launch_url': 'https://bound.example/launch',
+                'oidc_url': 'https://bound.example/oidc',
+                'tool_key_mode': 'keyset_url',
+                'tool_keyset_url': 'https://bound.example/jwks',
+            },
+            'services': {'ags_mode': 'disabled'},
+        }).configuration
+
+    def change_url(self):
+        return reverse('admin:lti_consumer_lticonfiguration_change', args=[self.placement.pk])
+
+    def test_add_is_denied_because_a_placement_needs_its_binding(self):
+        self.assertFalse(self.model_admin.has_add_permission(self.request))
+        self.assertEqual(
+            self.client.get(reverse('admin:lti_consumer_lticonfiguration_add')).status_code,
+            403,
+        )
+
+    def test_form_exposes_only_placement_owned_proctoring(self):
+        form_fields = set(self.model_admin.get_form(self.request, self.placement).base_fields)
+        readonly_fields = set(self.model_admin.get_readonly_fields(self.request, self.placement))
+        declared_fields = set(flatten_fieldsets(self.model_admin.get_fieldsets(self.request, self.placement)))
+
+        self.assertEqual(form_fields, {'lti_1p3_proctoring_enabled'})
+        self.assertEqual(declared_fields - readonly_fields, form_fields)
+        self.assertLessEqual(
+            {'location', 'config_id', 'config_store', 'external_id', 'reusable_configuration'},
+            readonly_fields,
+        )
+        # Every #724 ordinary/frozen column and the legacy JSON blob stay off the page.
+        self.assertFalse(set(PLACEMENT_CONFIGURATION_FIELDS) & (declared_fields | form_fields))
+        self.assertNotIn('lti_config', declared_fields | form_fields)
+
+    def test_change_page_renders_no_historical_secret_or_binding_input(self):
+        response = self.client.get(self.change_url())
+
+        self.assertEqual(response.status_code, 200)
+        html = response.content.decode()
+        self.assertContains(response, 'name="lti_1p3_proctoring_enabled"')
+        self.assertContains(response, str(self.configuration.passport_id))
+        self.assertContains(response, 'class="readonly"')
+        for value in ('historical-secret', 'https://historical.example/jwks', 'historical title', 'legacy-blob-value'):
+            self.assertNotContains(response, value)
+        for field in (
+            'version',
+            'display_name',
+            'lti_1p1_launch_url',
+            'lti_1p1_client_secret',
+            'lti_1p3_launch_url',
+            'lti_config',
+            'reusable_configuration',
+            'frozen_lti_1p3_tool_public_key',
+            'frozen_lti_1p3_tool_keyset_url',
+        ):
+            self.assertNotIn(f'name="{field}"', html)
+
+    def test_edit_cannot_reauth_binding_frozen_or_ordinary_storage(self):
+        response = self.client.post(self.change_url(), {
+            'lti_1p3_proctoring_enabled': 'on',
+            'reusable_configuration': str(self.other_configuration.pk),
+            'config_store': LtiConfiguration.CONFIG_EXTERNAL,
+            'external_id': 'x:y',
+            'version': LtiConfiguration.LTI_1P1,
+            'display_name': 'authored title',
+            'lti_1p1_launch_url': '',
+            'lti_1p1_client_secret': 'authored-secret',
+            'lti_1p3_redirect_uris': '[]',
+            'enable_grading': '1',
+            'frozen_lti_1p3_tool_public_key': 'authored-tool-key',
+            'frozen_lti_1p3_tool_keyset_url': 'https://authored.example/jwks',
+            '_save': 'Save',
+        })
+
+        self.assertEqual(response.status_code, 302)
+        self.placement.refresh_from_db()
+        self.assertTrue(self.placement.lti_1p3_proctoring_enabled)
+        self.assertEqual(self.placement.reusable_configuration_id, self.configuration.pk)
+        self.assertEqual(self.placement.config_store, LtiConfiguration.CONFIG_ON_DB)
+        self.assertIsNone(self.placement.external_id)
+        self.assertEqual(self.placement.version, LtiConfiguration.LTI_1P3)
+        self.assertEqual(self.placement.display_name, 'historical title')
+        self.assertIsNone(self.placement.lti_1p1_launch_url)
+        self.assertEqual(self.placement.lti_1p1_client_secret, 'historical-secret')
+        self.assertIsNone(self.placement.lti_1p3_redirect_uris)
+        self.assertIsNone(self.placement.enable_grading)
+        self.assertIsNone(self.placement.frozen_lti_1p3_tool_public_key)
+        self.assertEqual(self.placement.frozen_lti_1p3_tool_keyset_url, 'https://historical.example/jwks')

@@ -60,7 +60,7 @@ _SERVICE_MEMBERS = {'deep_linking_enabled', 'deep_linking_launch_url', 'ags_mode
 _DEFAULT_MEMBERS = {
     'display_name', 'enable_grading', 'grade_weight', 'accept_grades_after_due_date', 'open_tool_in',
     'inline_height', 'modal_height', 'modal_width', 'launch_button_text', 'send_extra_parameters',
-    'custom_parameters',
+    'hide_external_tool', 'custom_parameters',
 }
 _REUSABLE_SERVICE_FIELDS = {
     'deep_linking_enabled': 'lti_advantage_deep_linking_enabled',
@@ -220,7 +220,7 @@ def _validated_defaults(defaults):
         validated['display_name'] = _nonblank_string(
             validated['display_name'], 'defaults.display_name', _DISPLAY_NAME_MAX_LENGTH,
         )
-    for key in ('enable_grading', 'accept_grades_after_due_date', 'send_extra_parameters'):
+    for key in ('enable_grading', 'accept_grades_after_due_date', 'send_extra_parameters', 'hide_external_tool'):
         if key in validated:
             validated[key] = _checked_bool(validated[key], f'defaults.{key}')
     if 'grade_weight' in validated:
