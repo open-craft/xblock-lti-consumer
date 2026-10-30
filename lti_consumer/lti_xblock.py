@@ -1117,17 +1117,9 @@ class LtiConsumerXBlock(StudioEditableXBlockMixin, XBlock):
 
         return get_lti_consumer(config_id_for_block(self))
 
-    def get_effective_configuration(self):
-        """
-        Return the effective settings for this block's placement.
-
-        The placement row is read, never created, and resolving it performs no write and
-        generates no keys. A block without a placement row has no configuration at all, and
-        there is no block-field fallback for internal placements, so that raises
-        `LtiConfigurationError`.
-        """
+    def _get_placement(self):
+        """Return the persisted placement row for this block; raise when there is none."""
         # Runtime imports since this only runs in the Open edX LMS/Studio environments.
-        from lti_consumer.effective import resolve_lti_configuration  # pylint: disable=import-outside-toplevel
         from lti_consumer.models import LtiConfiguration  # pylint: disable=import-outside-toplevel
 
         # The bound configuration is read in the same query: resolution always needs it.
@@ -1141,6 +1133,32 @@ class LtiConsumerXBlock(StudioEditableXBlockMixin, XBlock):
             raise LtiConfigurationError(
                 'This LTI component has no configuration placement yet.',
             )
+        return placement
+
+    def get_effective_configuration(self):
+        """
+        Return the effective settings for this block's placement.
+
+        The placement row is read, never created, and resolving it performs no write and
+        generates no keys. A block without a placement row has no configuration at all, and
+        there is no block-field fallback for internal placements, so that raises
+        `LtiConfigurationError`.
+        """
+        from lti_consumer.effective import resolve_lti_configuration  # pylint: disable=import-outside-toplevel
+
+        return resolve_lti_configuration(self._get_placement())
+
+    def get_grading_configuration(self):
+        """Return the grading source, or None when the persisted placement is external.
+
+        None means the block owns grading, so the descriptor keeps the stored value.
+        A missing or unbound placement still raises; callers never fall back silently.
+        """
+        from lti_consumer.effective import resolve_lti_configuration  # pylint: disable=import-outside-toplevel
+
+        placement = self._get_placement()
+        if placement.config_store == placement.CONFIG_EXTERNAL:
+            return None
         return resolve_lti_configuration(placement)
 
     def _get_runtime_settings(self, effective=None):

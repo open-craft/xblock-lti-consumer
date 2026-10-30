@@ -45,6 +45,7 @@ class EffectiveGradingFieldTests(SimpleTestCase):
         self.block = make_xblock('lti_consumer', GradedBlock, {})
         self.effective = Mock(enable_grading=False, grade_weight=1.0, is_external=False)
         self.block.get_effective_configuration = Mock(return_value=self.effective)
+        self.block.get_grading_configuration = Mock(return_value=self.effective)
 
     def test_descriptor_is_the_field_and_keeps_its_field_contract(self):
         for name, descriptor_class in (('has_score', EffectiveBoolean), ('weight', EffectiveFloat)):
@@ -93,14 +94,14 @@ class EffectiveGradingFieldTests(SimpleTestCase):
 
         self.assertIs(self.block.has_score, True)
         self.assertEqual(self.block.weight, 2.5)
-        self.assertEqual(self.block.get_effective_configuration.call_count, 3)
+        self.assertEqual(self.block.get_grading_configuration.call_count, 3)
 
     def test_external_placement_keeps_the_stored_values(self):
         self.block.has_score = True
         self.block.weight = 2.5
         # A stale author value must not choose the branch: the resolver's source does.
         self.block.config_type = 'new'
-        self.effective.is_external = True
+        self.block.get_grading_configuration.return_value = None
         self.effective.enable_grading = False
         self.effective.grade_weight = 0.0
 
@@ -110,7 +111,7 @@ class EffectiveGradingFieldTests(SimpleTestCase):
     def test_missing_binding_reports_not_scorable_instead_of_stored_values(self):
         self.block.has_score = True
         self.block.weight = 4.0
-        self.block.get_effective_configuration.side_effect = LtiConfigurationError('no placement')
+        self.block.get_grading_configuration.side_effect = LtiConfigurationError('no placement')
 
         self.assertIs(self.block.has_score, False)
         self.assertEqual(self.block.weight, 0.0)
@@ -118,7 +119,7 @@ class EffectiveGradingFieldTests(SimpleTestCase):
     def test_other_errors_are_not_swallowed(self):
         for error in (ValueError('bad configuration'), DatabaseError('database down')):
             with self.subTest(error=type(error).__name__):
-                self.block.get_effective_configuration.side_effect = error
+                self.block.get_grading_configuration.side_effect = error
                 with self.assertRaises(type(error)):
                     _ = self.block.has_score
                 with self.assertRaises(type(error)):

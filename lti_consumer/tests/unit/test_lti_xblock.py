@@ -79,9 +79,17 @@ def patch_effective_configuration(testcase, **overrides):
     tests, so reading block fields here would only hide a block-field fallback.
     """
     effective = make_effective_configuration(**overrides)
-    patcher = patch.object(LtiConsumerXBlock, 'get_effective_configuration', Mock(return_value=effective))
-    patcher.start()
-    testcase.addCleanup(patcher.stop)
+    patchers = [
+        patch.object(LtiConsumerXBlock, 'get_effective_configuration', Mock(return_value=effective)),
+        patch.object(
+            LtiConsumerXBlock,
+            'get_grading_configuration',
+            Mock(side_effect=lambda: None if effective.is_external else effective),
+        ),
+    ]
+    for patcher in patchers:
+        patcher.start()
+        testcase.addCleanup(patcher.stop)
     return effective
 
 
@@ -3087,6 +3095,18 @@ class TestEffectiveConfigurationBoundary(TestBaseWithPatch):
         with self.assertNumQueries(1):
             self.xblock.get_effective_configuration()
 
+    def test_external_get_effective_configuration_still_uses_the_provider(self):
+        """
+        The launch path keeps its dynamic provider contract instead of turning lazy or silent
+        """
+        bind_external_placement(self.xblock)
+        with patch(
+            'lti_consumer.models.get_external_config_from_filter',
+            side_effect=RuntimeError("provider unavailable"),
+        ):
+            with self.assertRaises(RuntimeError):
+                self.xblock.get_effective_configuration()
+
     def test_resolving_performs_no_write(self):
         """
         Resolving never creates a configuration or generates keys
@@ -3274,6 +3294,31 @@ class TestEffectiveGradingFields(TestBaseWithPatch):
         # The stored value stays set, so Studio keeps showing the authored choice.
         self.assertTrue(self._stored('has_score').is_set_on(self.xblock))
 
+    def test_internal_grading_metadata_does_not_call_the_provider(self):
+        """
+        An internal placement resolves grading from its row, even under a stale block type
+        """
+        placement = bind_internal_placement(self.xblock, enable_grading=True, grade_weight=5)
+        self.xblock.config_type = 'external'
+
+        with patch('lti_consumer.models.get_external_config_from_filter') as provider:
+            self.assertTrue(self.xblock.has_score)
+            self.assertEqual(self.xblock.weight, 5)
+            self.assertEqual(self.xblock.max_score(), 5)
+
+            # A single field read costs one query; max_score() reads two fields, so it is not
+            # wrapped here.
+            with self.assertNumQueries(1):
+                _ = self.xblock.has_score
+            with self.assertNumQueries(1):
+                _ = self.xblock.weight
+
+            # Grading metadata is not cached: the same block sees the updated row.
+            LtiConfiguration.objects.filter(pk=placement.pk).update(grade_weight=7)
+            self.assertEqual(self.xblock.weight, 7)
+
+            provider.assert_not_called()
+
     def test_missing_configuration_reports_safe_metadata_defaults(self):
         """
         An unconfigured component looks ungraded instead of revealing a stale author value
@@ -3295,6 +3340,23 @@ class TestEffectiveGradingFields(TestBaseWithPatch):
         self.assertEqual(self.xblock.weight, 2.5)
         self.assertEqual(self.xblock.max_score(), 2.5)
         self.assertTrue(self._stored('has_score').read_from(self.xblock))
+
+    def test_external_grading_metadata_does_not_call_the_provider(self):
+        """An external placement owns grading on the block; metadata never asks the provider."""
+        bind_external_placement(self.xblock)
+        self.xblock.has_score = True
+        self.xblock.weight = 2.5
+        with patch(
+            'lti_consumer.models.get_external_config_from_filter',
+            side_effect=RuntimeError("provider unavailable"),
+        ) as provider:
+            for raw_config_type in ('new', 'database', 'external'):
+                with self.subTest(raw_config_type=raw_config_type):
+                    self.xblock.config_type = raw_config_type
+                    self.assertTrue(self.xblock.has_score)
+                    self.assertEqual(self.xblock.weight, 2.5)
+                    self.assertEqual(self.xblock.max_score(), 2.5)
+                    provider.assert_not_called()
 
     def _stored(self, field_name):
         """Return a field descriptor, whose storage read is the authoring/export value."""
