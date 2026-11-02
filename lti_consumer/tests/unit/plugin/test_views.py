@@ -78,6 +78,10 @@ class TestLti1p3KeysetEndpoint(TestBaseWithPatch):
         Check that the keyset endpoint correctly returns the public jwk stored in db
         as a JSON file attachment.
         """
+        # The placement carries no version override, so both readers use the shared version.
+        self.assertIsNone(self.lti_config.version)
+        self.assertEqual(self.configuration.version, LtiConfiguration.LTI_1P3)
+
         response = self.client.get(self.url)
 
         # Check response
@@ -121,15 +125,6 @@ class TestLti1p3KeysetEndpoint(TestBaseWithPatch):
 
         response = self.client.get(self.url)
         self.assertEqual(response.status_code, 404)
-
-    def test_usage_key_inherits_the_shared_version(self):
-        """A placement with no version override serves its shared configuration's version."""
-        self.assertIsNone(self.lti_config.version)
-        self.assertEqual(self.configuration.version, LtiConfiguration.LTI_1P3)
-
-        response = self.client.get(self.url)
-
-        self.assertEqual(response.status_code, 200)
 
     def test_registration_route_uses_the_shared_version_only(self):
         """A placement version never lends itself to the registration route."""
@@ -443,22 +438,6 @@ class TestLti1p3LaunchGateEndpoint(TestBaseWithPatch):
             str(response.content)
         )
 
-    def test_launch_inherits_the_shared_version(self):
-        """A placement with no version override launches with the shared version."""
-        self.assertIsNone(self.config.version)
-        self.assertEqual(self.configuration.version, LtiConfiguration.LTI_1P3)
-
-        response = self.client.get(self.url, {
-            "client_id": self.configuration.lti_1p3_client_id,
-            "redirect_uri": "https://tool.example",
-            "state": "state_test_123",
-            "nonce": "nonce",
-            "login_hint": self.launch_data.user_id,
-            "lti_message_hint": self.launch_data_key,
-        })
-
-        self.assertEqual(response.status_code, 200)
-
     def test_launch_for_unbound_placement_is_404_and_writes_nothing(self):
         """A legacy placement with no bound configuration gets an explicit error."""
         unbound = LtiConfiguration(
@@ -482,6 +461,10 @@ class TestLti1p3LaunchGateEndpoint(TestBaseWithPatch):
         """
         Check that the right launch response is generated
         """
+        # The placement carries no version override; the launch resolves the shared version.
+        self.assertIsNone(self.config.version)
+        self.assertEqual(self.configuration.version, LtiConfiguration.LTI_1P3)
+
         params = {
             "nonce": "nonce-value",
             "state": "hello-world",
@@ -878,6 +861,8 @@ class TestLti1p3AccessTokenEndpoint(TestBaseWithPatch):
         """
         token = {"access_token": "test-token"}
         mock_client().access_token.return_value = token
+        # The placement carries no version override; a wrong resolved version would 404.
+        self.assertIsNone(self.config.version)
 
         url = reverse(
             'lti_consumer:lti_consumer.access_token_via_location',
@@ -956,19 +941,6 @@ class TestLti1p3AccessTokenEndpoint(TestBaseWithPatch):
         """
         response = self.client.post(reverse(url, args=args))
         self.assertEqual(response.status_code, 404)
-
-    def test_access_token_usage_route_inherits_the_shared_version(self):
-        """The usage route resolves the version, so no placement override is needed."""
-        self.assertIsNone(self.config.version)
-        body = urllib.parse.urlencode(self.get_body(create_jwt(self.key, {})))
-
-        response = self.client.post(
-            reverse('lti_consumer:lti_consumer.access_token_via_location', args=[str(self.config.location)]),
-            data=body,
-            content_type='application/json',
-        )
-
-        self.assertEqual(response.status_code, 200)
 
     def test_access_token_registration_route_uses_the_shared_version_only(self):
         """A placement override never lends its version to the registration route."""

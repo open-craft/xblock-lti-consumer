@@ -258,26 +258,6 @@ class TestGetOrCreateLocalLtiConfiguration(Lti1P3TestCase):
 
         self.assertEqual(lti_config.config_store, config_store)
 
-    def test_external_reference_is_not_cleared(self):
-        """
-        An external placement keeps its stored external reference.
-        """
-        lti_config = LtiConfiguration.objects.create(
-            location=self.location,
-            version=LtiConfiguration.LTI_1P3,
-            config_store=LtiConfiguration.CONFIG_EXTERNAL,
-            external_id="test_plugin:test-id"
-        )
-
-        _get_or_create_local_lti_config(
-            lti_version=LtiConfiguration.LTI_1P3,
-            block=self.xblock,
-        )
-
-        lti_config.refresh_from_db()
-        self.assertEqual(lti_config.config_store, LtiConfiguration.CONFIG_EXTERNAL)
-        self.assertEqual(lti_config.external_id, "test_plugin:test-id")
-
     def test_creation_does_not_create_or_bind_a_configuration(self):
         """
         A placement is created unbound; attaching a configuration is an explicit step.

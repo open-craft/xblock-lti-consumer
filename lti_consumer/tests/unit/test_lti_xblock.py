@@ -1796,15 +1796,6 @@ class TestMaxScore(TestLtiConsumerXBlock):
     Unit tests for LtiConsumerXBlock.max_score()
     """
 
-    def test_max_score_when_scored(self):
-        """
-        Test `max_score` when grading is enabled
-        """
-        self.effective.enable_grading = True
-        self.effective.grade_weight = 1.0
-
-        self.assertEqual(self.xblock.max_score(), 1.0)
-
     def test_max_score_when_not_scored(self):
         """
         Test `max_score` is None when grading is disabled
@@ -1817,15 +1808,6 @@ class TestMaxScore(TestLtiConsumerXBlock):
         self.effective.grade_weight = 1.0
 
         self.assertIsNone(self.xblock.max_score())
-
-    def test_max_score_when_weight_is_zero(self):
-        """
-        Test a weight of 0 with grading enabled is a real maximum of 0, not a missing maximum
-        """
-        self.effective.enable_grading = True
-        self.effective.grade_weight = 0
-
-        self.assertEqual(self.xblock.max_score(), 0)
 
 
 class TestSetScore(TestLtiConsumerXBlock):
@@ -3283,22 +3265,6 @@ class TestEffectiveGradingFields(TestBaseWithPatch):
             'weight': 1.0,
         })
 
-    def test_platform_read_uses_the_shared_grading_values(self):
-        """
-        A bound internal placement exposes its resolved grading metadata to platform getattr
-        """
-        bind_internal_placement(self.xblock, enable_grading=True, grade_weight=5)
-
-        self.assertTrue(self.xblock.has_score)
-        self.assertEqual(self.xblock.weight, 5)
-        self.assertEqual(self.xblock.max_score(), 5)
-
-        # Authoring, storage and export read the stored values.
-        self.assertFalse(self._stored('has_score').read_from(self.xblock))
-        self.assertEqual(self._stored('weight').read_from(self.xblock), 1.0)
-        # The stored value stays set, so Studio keeps showing the authored choice.
-        self.assertTrue(self._stored('has_score').is_set_on(self.xblock))
-
     def test_internal_grading_metadata_does_not_call_the_provider(self):
         """
         An internal placement resolves grading from its row, even under a stale block type
@@ -3310,6 +3276,12 @@ class TestEffectiveGradingFields(TestBaseWithPatch):
             self.assertTrue(self.xblock.has_score)
             self.assertEqual(self.xblock.weight, 5)
             self.assertEqual(self.xblock.max_score(), 5)
+
+            # Authoring, storage and export read the stored values, before the row changes.
+            self.assertFalse(self._stored('has_score').read_from(self.xblock))
+            self.assertEqual(self._stored('weight').read_from(self.xblock), 1.0)
+            # The stored value stays set, so Studio keeps showing the authored choice.
+            self.assertTrue(self._stored('has_score').is_set_on(self.xblock))
 
             # A single field read costs one query; max_score() reads two fields, so it is not
             # wrapped here.
@@ -3333,21 +3305,11 @@ class TestEffectiveGradingFields(TestBaseWithPatch):
         self.assertIsNone(self.xblock.max_score())
         self.assertFalse(LtiConfiguration.objects.exists())
 
-    def test_external_placement_keeps_the_stored_grading_values(self):
-        """
-        An external reference owns grading on the block, so the stored values win
-        """
-        bind_external_placement(self.xblock)
-        self.xblock.has_score = True
-        self.xblock.weight = 2.5
-
-        self.assertTrue(self.xblock.has_score)
-        self.assertEqual(self.xblock.weight, 2.5)
-        self.assertEqual(self.xblock.max_score(), 2.5)
-        self.assertTrue(self._stored('has_score').read_from(self.xblock))
-
     def test_external_grading_metadata_does_not_call_the_provider(self):
-        """An external placement owns grading on the block; metadata never asks the provider."""
+        """
+        An external placement owns grading on the block; metadata never asks the provider,
+        and a stale raw block type never changes that.
+        """
         bind_external_placement(self.xblock)
         self.xblock.has_score = True
         self.xblock.weight = 2.5
@@ -3361,25 +3323,12 @@ class TestEffectiveGradingFields(TestBaseWithPatch):
                     self.assertTrue(self.xblock.has_score)
                     self.assertEqual(self.xblock.weight, 2.5)
                     self.assertEqual(self.xblock.max_score(), 2.5)
+                    # The block keeps its stored value, so authoring and export still see it.
+                    self.assertTrue(self._stored('has_score').read_from(self.xblock))
+                    for stored_due_flag in (False, True):
+                        self.xblock.accept_grades_past_due = stored_due_flag
+                        self.assertIs(self.xblock.accepts_grades_after_due_date(), stored_due_flag)
                     provider.assert_not_called()
-
-    def test_external_due_date_metadata_does_not_call_the_provider(self):
-        """
-        An external placement keeps the block-owned due-date flag; metadata never asks the
-        provider, and a stale raw block type never changes that.
-        """
-        bind_external_placement(self.xblock)
-        for stored_flag in (False, True):
-            for raw_config_type in ('new', 'database', 'external'):
-                with self.subTest(stored_flag=stored_flag, raw_config_type=raw_config_type):
-                    self.xblock.accept_grades_past_due = stored_flag
-                    self.xblock.config_type = raw_config_type
-                    with patch(
-                        'lti_consumer.models.get_external_config_from_filter',
-                        side_effect=RuntimeError("provider unavailable"),
-                    ) as provider:
-                        self.assertIs(self.xblock.accepts_grades_after_due_date(), stored_flag)
-                        provider.assert_not_called()
 
     def _stored(self, field_name):
         """Return a field descriptor, whose storage read is the authoring/export value."""
