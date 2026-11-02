@@ -1775,10 +1775,14 @@ class LtiConsumerXBlock(StudioEditableXBlockMixin, XBlock):
         """
         Return whether grades are accepted after the due date.
 
-        External configurations keep the block-owned value; an internal placement resolves it
-        from its effective configuration.
+        Grading metadata reads the persisted placement, never the provider: an external
+        reference returns the block-owned value, and an internal placement resolves the flag
+        from its configuration. A missing or unbound placement still raises.
         """
-        return self._get_runtime_settings()['accept_grades_past_due']
+        effective = self.get_grading_configuration()
+        if effective is None:
+            return self.accept_grades_past_due
+        return effective.accept_grades_after_due_date
 
     def max_score(self):
         """

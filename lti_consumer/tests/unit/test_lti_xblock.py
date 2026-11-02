@@ -3232,12 +3232,17 @@ class TestEffectiveConfigurationBoundary(TestBaseWithPatch):
 
     def test_accepts_grades_after_due_date_uses_the_resolved_value(self):
         """
-        The due-date acceptance used by grading reads the resolved settings
+        The due-date acceptance used by grading reads the resolved settings, never the block
         """
-        bind_internal_placement(self.xblock, accept_grades_after_due_date=False)
+        placement = bind_internal_placement(self.xblock, accept_grades_after_due_date=False)
         self.xblock.accept_grades_past_due = True
 
         self.assertFalse(self.xblock.accepts_grades_after_due_date())
+
+        # The row is read per call, so an updated override wins while the stale block flag loses.
+        LtiConfiguration.objects.filter(pk=placement.pk).update(accept_grades_after_due_date=True)
+        self.xblock.accept_grades_past_due = False
+        self.assertTrue(self.xblock.accepts_grades_after_due_date())
 
     def test_presentation_stays_block_owned_for_external_configurations(self):
         """
@@ -3357,6 +3362,24 @@ class TestEffectiveGradingFields(TestBaseWithPatch):
                     self.assertEqual(self.xblock.weight, 2.5)
                     self.assertEqual(self.xblock.max_score(), 2.5)
                     provider.assert_not_called()
+
+    def test_external_due_date_metadata_does_not_call_the_provider(self):
+        """
+        An external placement keeps the block-owned due-date flag; metadata never asks the
+        provider, and a stale raw block type never changes that.
+        """
+        bind_external_placement(self.xblock)
+        for stored_flag in (False, True):
+            for raw_config_type in ('new', 'database', 'external'):
+                with self.subTest(stored_flag=stored_flag, raw_config_type=raw_config_type):
+                    self.xblock.accept_grades_past_due = stored_flag
+                    self.xblock.config_type = raw_config_type
+                    with patch(
+                        'lti_consumer.models.get_external_config_from_filter',
+                        side_effect=RuntimeError("provider unavailable"),
+                    ) as provider:
+                        self.assertIs(self.xblock.accepts_grades_after_due_date(), stored_flag)
+                        provider.assert_not_called()
 
     def _stored(self, field_name):
         """Return a field descriptor, whose storage read is the authoring/export value."""
